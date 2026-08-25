@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "do-sockets-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "observability": {
+    "enabled": true
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CHANNEL_HUB", "class_name": "ChannelHub" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ChannelHub"] }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "do-sockets",
+      // Run `npx wrangler d1 create do-sockets` and paste the returned id here.
+      "database_id": "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+    }
+  ]
+}
