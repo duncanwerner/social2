@@ -8,8 +8,7 @@ export default function Home() {
       <section class="hero">
         <h1>Rotation</h1>
         <p class="tagline">
-          Schedule Padel socials where players rotate partners across short
-          matches — and watch the schedule update live.
+          Schedule socials where players rotate partners across short matches
         </p>
         <button
           class="primary hero-cta"
