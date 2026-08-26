@@ -28,28 +28,43 @@ export default function ViewInfo() {
           <section class="card">
             <Show when={ev().metadata.date}>
               <div class="info-row">
-                <span class="info-label">Date</span>
+                <span class="info-label">
+                  <span class="info-icon" aria-hidden="true">📅</span>
+                  Date
+                </span>
                 <span>{dateLabel(ev().metadata.date)}</span>
               </div>
             </Show>
             <Show when={ev().metadata.time}>
               <div class="info-row">
-                <span class="info-label">Time</span>
+                <span class="info-label">
+                  <span class="info-icon" aria-hidden="true">🕒</span>
+                  Time
+                </span>
                 <span>{ev().metadata.time}</span>
               </div>
             </Show>
             <Show when={ev().metadata.location}>
               <div class="info-row">
-                <span class="info-label">Location</span>
+                <span class="info-label">
+                  <span class="info-icon" aria-hidden="true">📍</span>
+                  Location
+                </span>
                 <span>{ev().metadata.location}</span>
               </div>
             </Show>
             <div class="info-row">
-              <span class="info-label">Players</span>
+              <span class="info-label">
+                <span class="info-icon" aria-hidden="true">👥</span>
+                Players
+              </span>
               <span>{ev().players.length}</span>
             </div>
             <div class="info-row">
-              <span class="info-label">Courts</span>
+              <span class="info-label">
+                <span class="info-icon" aria-hidden="true">🎾</span>
+                Courts
+              </span>
               <span>{ev().courts.length}</span>
             </div>
           </section>

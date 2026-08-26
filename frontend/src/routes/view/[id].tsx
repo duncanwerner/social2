@@ -151,21 +151,24 @@ export default function ViewLayout(props: RouteSectionProps) {
                 class={isActive("") ? "tab active" : "tab"}
                 onClick={() => navigate(base())}
               >
-                Info
+                <span class="tab-icon" aria-hidden="true">🏠</span>
+                <span class="tab-label">Info</span>
               </button>
               <button
                 type="button"
                 class={isActive("/rounds") ? "tab active" : "tab"}
                 onClick={() => navigate(base() + "/rounds")}
               >
-                Rounds
+                <span class="tab-icon" aria-hidden="true">🎾</span>
+                <span class="tab-label">Rounds</span>
               </button>
               <button
                 type="button"
                 class={isActive("/stats") ? "tab active" : "tab"}
                 onClick={() => navigate(base() + "/stats")}
               >
-                Stats
+                <span class="tab-icon" aria-hidden="true">👑</span>
+                <span class="tab-label">Stats</span>
               </button>
             </nav>
           </div>

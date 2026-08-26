@@ -1,4 +1,4 @@
-import { createEffect, createSignal } from "solid-js";
+import { createEffect, createSignal, onCleanup } from "solid-js";
 import { For, Show } from "@solidjs/web";
 import { useLocation, useNavigate, useParams } from "@solidjs/router";
 import { CreatePlayerID } from "../social";
@@ -110,7 +110,8 @@ export function EventEditor() {
   }
   const [showPlayers, setShowPlayers] = createSignal(false);
   const [showCourts, setShowCourts] = createSignal(false);
-  const [saved, setSaved] = createSignal(false);
+  // A freshly-loaded synced event starts "saved"; a brand-new one starts unsaved.
+  const [saved, setSaved] = createSignal(linkedRef() !== null);
   const [syncing, setSyncing] = createSignal(false);
   const [sync, setSync] = createSignal("");
   const [copied, setCopied] = createSignal(false);
@@ -190,52 +191,54 @@ export function EventEditor() {
     setSaved(false);
   };
 
+  // Assemble the event from the form, spreading `base` first so fields the form
+  // doesn't edit (rounds/scores/options) are preserved.
+  const buildEvent = (base: SocialEvent): SocialEvent => ({
+    ...base,
+    players: playerNames().map((name, i) => ({
+      id: CreatePlayerID(i),
+      name: name.trim(),
+      ...(playerDisabled()[i] ? { disabled: true } : {}),
+    })),
+    courts: courtNames().map((name) =>
+      name.trim() ? { name: name.trim() } : {},
+    ),
+    metadata: {
+      name: evName().trim(),
+      description: evDescription().trim(),
+      location: evLocation().trim(),
+      date: evDate(),
+      time: evTime().trim(),
+    },
+  });
+
+  // Fetch the current record as the merge base — the live rounds page writes
+  // rounds/scores straight to it, so it can be newer than our localStorage copy;
+  // merging onto it keeps those from being clobbered. Falls back to local.
+  async function freshBase(refId: string): Promise<SocialEvent> {
+    try {
+      return (await getRecord(refId)).data as SocialEvent;
+    } catch {
+      return initial; // record gone or offline — keep the local base
+    }
+  }
+
+  // Explicit save: the "Create social" action for a not-yet-synced event. Creates
+  // the backend record (or updates it, if a ref already exists) and navigates to
+  // the update page, where edits auto-save from then on.
   async function save() {
     const id = editingId ?? newEventId();
     const existingRef = loadRecordRef(id);
 
-    // Base for the fields the form doesn't edit — rounds, scores, options. The
-    // live rounds page writes those straight to the backend record, so the record
-    // can be newer than this browser's localStorage copy. Merge onto the fetched
-    // record (not stale `initial`), or a save here would wipe the rounds. If the
-    // record is gone or unreachable, fall back to the local copy.
-    let base: SocialEvent = initial;
-    if (existingRef && isAuthenticated()) {
-      try {
-        base = (await getRecord(existingRef.id)).data as SocialEvent;
-      } catch {
-        /* record gone or offline — keep the local base */
-      }
-    }
-
-    const event: SocialEvent = {
-      ...base, // preserve rounds/options/scores when editing
-      players: playerNames().map((name, i) => ({
-        id: CreatePlayerID(i),
-        name: name.trim(),
-        ...(playerDisabled()[i] ? { disabled: true } : {}),
-      })),
-      courts: courtNames().map((name) =>
-        name.trim() ? { name: name.trim() } : {},
-      ),
-      metadata: {
-        name: evName().trim(),
-        description: evDescription().trim(),
-        location: evLocation().trim(),
-        date: evDate(),
-        time: evTime().trim(),
-      },
-    };
+    const base = existingRef && isAuthenticated() ? await freshBase(existingRef.id) : initial;
+    const event = buildEvent(base);
     saveEvent(id, event);
     setSaved(true);
 
-    // Push to the backend records API (the owner is the signed-in user). Create
-    // the record the first time; update it (using the stored ref) thereafter.
     if (isAuthenticated()) {
       setSyncing(true);
       setSync("Syncing…");
 
-      // Create a backend record for this event and remember the link.
       const create = async (channel: string, note: string) => {
         const created = await createRecord({ data: event, channel });
         const ref = { id: created.id, channel: created.channel };
@@ -247,21 +250,11 @@ export function EventEditor() {
       try {
         if (existingRef) {
           try {
-            const updated = await updateRecord({
-              id: existingRef.id,
-              data: event,
-            });
-            setSync(
-              `Updated record ${existingRef.id} (delivered ${updated.delivered})`,
-            );
+            const updated = await updateRecord({ id: existingRef.id, data: event });
+            setSync(`Updated record ${existingRef.id} (delivered ${updated.delivered})`);
           } catch (err) {
-            // The linked record is gone on the backend — self-heal by
-            // re-creating it (keeping the same channel).
             if (err instanceof ApiError && err.status === 404) {
-              await create(
-                existingRef.channel,
-                "Re-created record (previous link was stale)",
-              );
+              await create(existingRef.channel, "Re-created record (previous link was stale)");
             } else {
               throw err;
             }
@@ -280,6 +273,65 @@ export function EventEditor() {
 
     if (!editingId) navigate(`/update-event/${id}`);
   }
+
+  // Auto-save: once the event has a backend record, persist edits to it directly
+  // (no button). Debounced so a burst of edits becomes one write + one broadcast.
+  async function persist(ref: { id: string; channel: string }) {
+    if (!editingId || !isAuthenticated()) return;
+    setSyncing(true);
+    try {
+      const event = buildEvent(await freshBase(ref.id));
+      saveEvent(editingId, event);
+      await updateRecord({ id: ref.id, data: event });
+      setSaved(true);
+      setSync("");
+    } catch (err) {
+      const reason = err instanceof ApiError ? err.message : String(err);
+      setSync(`Couldn’t save — ${reason}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const AUTOSAVE_MS = 1000;
+  let autoTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleAutoSave = () => {
+    const ref = linkedRef();
+    if (!ref || !isAuthenticated()) return; // brand-new event: wait for Create
+    setSaved(false);
+    if (autoTimer) clearTimeout(autoTimer);
+    autoTimer = setTimeout(() => {
+      autoTimer = undefined;
+      void persist(ref);
+    }, AUTOSAVE_MS);
+  };
+
+  // A stable string of every editable field; the effect fires whenever it changes.
+  const snapshot = () =>
+    JSON.stringify({
+      n: evName(),
+      d: evDate(),
+      t: evTime(),
+      l: evLocation(),
+      desc: evDescription(),
+      p: playerNames(),
+      c: courtNames(),
+      dis: playerDisabled(),
+    });
+  const initialSnapshot = snapshot();
+  createEffect(snapshot, (snap) => {
+    if (snap === initialSnapshot) return; // mount / reverted — nothing to save
+    scheduleAutoSave();
+  });
+
+  // Flush a pending debounce if the user navigates away mid-edit.
+  onCleanup(() => {
+    if (autoTimer) {
+      clearTimeout(autoTimer);
+      const ref = linkedRef();
+      if (ref) void persist(ref);
+    }
+  });
 
   return (
     <main class="editor">
@@ -579,14 +631,24 @@ export function EventEditor() {
       </Show>
 
       <div class="action-bar">
-        <button
-          class="primary"
-          type="button"
-          disabled={syncing()}
-          onClick={save}
+        <Show
+          when={linkedRef()}
+          fallback={
+            <button
+              class="primary"
+              type="button"
+              disabled={syncing()}
+              onClick={save}
+            >
+              {buttonLabel()}
+            </button>
+          }
         >
-          {buttonLabel()}
-        </button>
+          {/* Synced event: edits auto-save (debounced) — no button, just status. */}
+          <p class="hint autosave-status">
+            {syncing() ? "Saving…" : saved() ? "All changes saved ✓" : "Saving…"}
+          </p>
+        </Show>
       </div>
     </main>
   );

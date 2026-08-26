@@ -61,11 +61,17 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
   link, per-player **Sit** checkboxes (temporarily bench a player — see optimizer
   note), a free-text event **time** (opaque, so ranges like "11:00 – 1:00" work),
   and a **Finish / Reopen** control that flips the record's status.
-- **Editor save is backend-authoritative for untouched fields.** Rounds/scores are
+- **Saving.** A brand-new event stays local until the explicit **Create social**
+  press (which creates the backend record); from then on the editor **auto-saves**
+  edits on a ~1s debounce (a `createEffect` over a serialized snapshot of the form
+  → `persist()`), flushing any pending save in `onCleanup` if you navigate away.
+  No Save button once the record exists — just an "All changes saved" status.
+- **Saves are backend-authoritative for untouched fields.** Rounds/scores are
   written by the live rounds page straight to the record, so localStorage goes
-  stale. `EventEditor.save()` therefore fetches the record and merges the edited
-  metadata/roster onto **that** (not stale `initial`), or the save would wipe the
-  rounds. Any field the form doesn't render must be preserved this way.
+  stale. Both the explicit `save()` and the auto-save `persist()` build the payload
+  via `buildEvent(base)` where `base` is the **freshly-fetched record** (not stale
+  `initial`), or the save would wipe the rounds. Any field the form doesn't render
+  must be preserved this way.
 - **Player flow.** `/view/:id` is a **layout** (`routes/view/[id].tsx`) that loads
   the record once (public `get-event`) and — unless the event is finished —
   subscribes to its channel (`socket.ts`, auto-reconnect); it shares state with its
