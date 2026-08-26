@@ -219,7 +219,11 @@ button.link:disabled {
   margin: 0 auto;
   padding: 10px 16px 0;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+}
+.view-status .edit-link {
+  margin-right: auto;
 }
 .pill {
   display: inline-flex;
@@ -300,6 +304,9 @@ button.link:disabled {
 .team {
   font-size: 16px;
 }
+.team.win {
+  font-weight: 700;
+}
 .score {
   font-size: 18px;
   font-variant-numeric: tabular-nums;
@@ -343,6 +350,7 @@ button.link:disabled {
 }
 .rounds-actions button {
   flex: 1;
+  white-space: nowrap;
 }
 button.secondary {
   background: var(--panel-2);
@@ -354,6 +362,91 @@ button.secondary {
 }
 button.secondary:disabled {
   opacity: 0.6;
+}
+
+/* --- Stats / league table --- */
+
+.seg {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.seg-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.seg-btn.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.standings-card {
+  padding: 8px 4px 12px;
+}
+.standings {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+.standings th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.standings td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.standings tbody tr:last-child td {
+  border-bottom: none;
+}
+.standings .col-rank {
+  width: 28px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.standings .col-name {
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+  width: 100%;
+}
+.standings .col-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.standings .col-key {
+  color: var(--text);
+  font-weight: 700;
+}
+.standings tr.leader td {
+  font-weight: 700;
+  color: var(--text);
+}
+.standings .crown {
+  font-size: 13px;
+}
+.standings-note {
+  margin: 10px 8px 0;
 }
 
 .tab-bar {
@@ -444,6 +537,11 @@ button.secondary:disabled {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.editor-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 .editor-head h1 {
   margin: 0;
@@ -566,6 +664,63 @@ button.secondary:disabled {
   text-align: right;
   font-size: 13px;
   color: var(--muted);
+}
+.name-field input[type="text"],
+.name-field > input:not([type]) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sit-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.sit-toggle input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+.name-field.player-out input:not([type="checkbox"]) {
+  opacity: 0.55;
+}
+.name-field.player-out .sit-toggle {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.status-text h2 {
+  margin: 0 0 2px;
+}
+.status-text .hint {
+  margin: 0;
+}
+.status-row button {
+  flex: 0 0 auto;
+}
+button.danger {
+  background: transparent;
+  border: 1px solid var(--err);
+  border-radius: 8px;
+  color: var(--err);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+button.danger:disabled {
+  opacity: 0.6;
 }
 
 .card.dev {

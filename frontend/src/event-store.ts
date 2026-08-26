@@ -21,7 +21,7 @@ export function blankEvent(): SocialEvent {
       name: "",
     })),
     courts: Array.from({ length: 2 }, () => ({})),
-    metadata: { name: "", description: "", location: "", date: "" },
+    metadata: { name: "", description: "", location: "", date: "", time: "" },
   };
 }
 
@@ -71,4 +71,26 @@ export function saveRecordRef(localId: string, ref: RecordRef): void {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Reverse of loadRecordRef: the local event id that created a given backend
+ * record, or null if this browser has no local copy (e.g. created elsewhere).
+ * Used by the view page to offer the owner an "edit" link back to the editor,
+ * which is keyed by local id.
+ */
+export function findLocalIdForRecord(recordId: string): string | null {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(REF_PREFIX)) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const ref = JSON.parse(raw) as RecordRef;
+      if (ref.id === recordId) return key.slice(REF_PREFIX.length);
+    }
+  } catch {
+    /* storage unavailable */
+  }
+  return null;
 }

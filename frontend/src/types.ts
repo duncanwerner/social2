@@ -12,6 +12,12 @@ import type { Options, PlayerID, Round } from "./social";
 export interface Player {
   id: PlayerID;
   name: string;
+  /**
+   * Temporarily sit this player out. When set, they're added to the optimizer's
+   * `force_sitting` on the next generated round (no court assigned) until cleared.
+   * Absent/false means active. See EventEditor (checkbox) and round-worker.
+   */
+  disabled?: boolean;
 }
 
 /** A court that matches are played on. */
@@ -30,6 +36,12 @@ export interface SocialEventMetadata {
    * JSON round-trips through the backend `records.data` blob.
    */
   date: string;
+  /**
+   * Free-form time of day, opaque on purpose so an organiser can express a range
+   * (e.g. "11:00 – 1:00") rather than a single instant. Optional; older records
+   * predate it.
+   */
+  time?: string;
 }
 
 /**

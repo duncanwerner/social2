@@ -4,7 +4,7 @@ import { useViewLive } from "../../../view-live";
 import { generateRounds } from "../../../round-worker";
 import { isFinished } from "../../../event-status";
 import { ApiError } from "../../../api-error";
-import type { PlayerID, Team } from "../../../social";
+import type { Matchup, PlayerID, Team } from "../../../social";
 
 // /view/:id/rounds — the live round display. Players read; the owner (signed in)
 // generates rounds and enters scores here — one page for both.
@@ -50,6 +50,14 @@ export default function ViewRounds() {
   const teamName = (t: Team) => `${nameOf(t[0])} & ${nameOf(t[1])}`;
   const courtName = (i: number) =>
     live.event()?.courts[i]?.name?.trim() || `Court ${i + 1}`;
+
+  // The winning side of a matchup once both scores are in: 0 = A, 1 = B, -1 =
+  // unscored or a draw (no team highlighted).
+  const winner = (m: Matchup): 0 | 1 | -1 => {
+    const [a, b] = m.score;
+    if (a < 0 || b < 0 || a === b) return -1;
+    return a > b ? 0 : 1;
+  };
 
   const scoreLabel = (n: number) => (n < 0 ? "—" : String(n));
   const draftVal = (m: number, side: 0 | 1) => {
@@ -105,6 +113,32 @@ export default function ViewRounds() {
       await live.save({ ...base, rounds: nextRounds });
     } catch (e) {
       setError(`Could not generate round — ${errMsg(e)}`);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  // "Just generated" affordance: the viewed round is the newest one and has no
+  // saved scores yet (and none half-entered). Regenerating replaces it in place.
+  const isLastRound = () => viewIdx() === rounds().length - 1;
+  const currentUnscored = () =>
+    (round()?.matchups ?? []).every((m) => m.score[0] < 0 && m.score[1] < 0);
+  const canRegenerate = () =>
+    canManage() && isLastRound() && !dirty() && currentUnscored();
+
+  // Discard the current (newest) round and generate a fresh one in its place,
+  // keeping all prior rounds so the optimizer still avoids repeats.
+  async function regenerate() {
+    const ev = live.event();
+    if (!ev || generating()) return;
+    const kept = { ...ev, rounds: (ev.rounds ?? []).slice(0, viewIdx()) };
+    setGenerating(true);
+    setError("");
+    try {
+      const nextRounds = await generateRounds(kept, 1);
+      await live.save({ ...kept, rounds: nextRounds });
+    } catch (e) {
+      setError(`Could not regenerate round — ${errMsg(e)}`);
     } finally {
       setGenerating(false);
     }
@@ -176,7 +210,9 @@ export default function ViewRounds() {
             <section class="card matchup">
               <div class="court-label">{courtName(i())}</div>
               <div class="team-row">
-                <span class="team">{teamName(m.A)}</span>
+                <span class={winner(m) === 0 ? "team win" : "team"}>
+                  {teamName(m.A)}
+                </span>
                 <Show
                   when={canManage()}
                   fallback={<span class="score">{scoreLabel(m.score[0])}</span>}
@@ -193,7 +229,9 @@ export default function ViewRounds() {
               </div>
               <div class="vs">vs</div>
               <div class="team-row">
-                <span class="team">{teamName(m.B)}</span>
+                <span class={winner(m) === 1 ? "team win" : "team"}>
+                  {teamName(m.B)}
+                </span>
                 <Show
                   when={canManage()}
                   fallback={<span class="score">{scoreLabel(m.score[1])}</span>}
@@ -225,25 +263,41 @@ export default function ViewRounds() {
 
         <Show when={canManage()}>
           <div class="rounds-actions">
-            <button
-              class={dirty() ? "primary" : "secondary"}
-              type="button"
-              disabled={!dirty() || savingScores()}
-              onClick={saveScores}
+            {/* On a fresh, unscored round the score save is a no-op, so Regenerate
+                takes that slot — keeping the row to two buttons that never wrap. */}
+            <Show
+              when={canRegenerate()}
+              fallback={
+                <button
+                  class={dirty() ? "primary" : "secondary"}
+                  type="button"
+                  disabled={!dirty() || savingScores()}
+                  onClick={saveScores}
+                >
+                  {savingScores()
+                    ? "Saving…"
+                    : dirty()
+                      ? "Save scores"
+                      : "Scores saved"}
+                </button>
+              }
             >
-              {savingScores()
-                ? "Saving…"
-                : dirty()
-                  ? "Save scores"
-                  : "Scores saved"}
-            </button>
+              <button
+                class="secondary"
+                type="button"
+                disabled={generating()}
+                onClick={regenerate}
+              >
+                {generating() ? "Regenerating…" : "Regenerate"}
+              </button>
+            </Show>
             <button
               class="primary"
               type="button"
-              disabled={generating()}
+              disabled={generating() || !isLastRound()}
               onClick={generate}
             >
-              {generating() ? "Generating…" : "Generate next round"}
+              {generating() ? "Generating…" : "+ Next round"}
             </button>
           </div>
         </Show>

@@ -57,19 +57,36 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
 - **Owner flow.** `/login` → guard; `/create-event` and `/update-event/:localId`
   (`components/EventEditor.tsx`) are the setup surface (roster/courts/metadata),
   saved locally (`event-store.ts`) and pushed to the backend as a record. The
-  update page shows a shareable `/view/{recordId}` player link.
+  update page has: a shareable `/view/{recordId}` player link + a "View as player"
+  link, per-player **Sit** checkboxes (temporarily bench a player — see optimizer
+  note), a free-text event **time** (opaque, so ranges like "11:00 – 1:00" work),
+  and a **Finish / Reopen** control that flips the record's status.
+- **Editor save is backend-authoritative for untouched fields.** Rounds/scores are
+  written by the live rounds page straight to the record, so localStorage goes
+  stale. `EventEditor.save()` therefore fetches the record and merges the edited
+  metadata/roster onto **that** (not stale `initial`), or the save would wipe the
+  rounds. Any field the form doesn't render must be preserved this way.
 - **Player flow.** `/view/:id` is a **layout** (`routes/view/[id].tsx`) that loads
   the record once (public `get-event`) and — unless the event is finished —
   subscribes to its channel (`socket.ts`, auto-reconnect); it shares state with its
   child pages via a context (`view-live.ts`). Children: `index.tsx` (info),
-  `rounds.tsx` (live rounds), `stats.tsx` (stub). Bad id → `ErrorView`.
+  `rounds.tsx` (live rounds), `stats.tsx` (league table). A finished status shows
+  a "Finished" pill and opens no socket (the pill is derived from event status, not
+  the transient socket state). Bad id → `ErrorView`.
 - **Owner-on-view.** `get-event` returns `owner: true` for the owner's token, so the
-  rounds page shows owner controls: **generate round** (optimizer runs in a Web
-  Worker — `round-worker.ts` wrapping `social-worker.ts`/`social.ts`) and **score
-  entry**. Saving calls `update-event`, which broadcasts to every viewer live.
-- **Domain types** in `types.ts` (`SocialEvent`/`Player`/`Court`); the optimizer's
-  branded `PlayerID`/`Round` live in `social.ts`. Backend wire types in
-  `protocol.ts`; the records/auth clients in `records.ts` / `auth.ts`.
+  rounds page shows owner controls: **generate round** / **regenerate** the current
+  unscored round (optimizer runs in a Web Worker — `round-worker.ts` wrapping
+  `social-worker.ts`/`social.ts`) and **score entry**. Generate is disabled off the
+  last round. Disabled players are folded into the optimizer's `force_sitting` at
+  generation time, so they get no court until re-enabled. Saving calls
+  `update-event`, which broadcasts to every viewer live.
+- **Stats** (`stats.tsx` + `standings.ts`) — a live league table with two modes:
+  **Games** (games won/lost, Win%, ±) and **Matches** (football 3/1/0 points).
+  Competition ranking (ties share a rank); leaders get a crown + bold row.
+- **Domain types** in `types.ts` (`SocialEvent`/`Player`/`Court`; `Player.disabled`,
+  `metadata.time` are optional); the optimizer's branded `PlayerID`/`Round` live in
+  `social.ts`. Backend wire types in `protocol.ts`; the records/auth clients in
+  `records.ts` / `auth.ts`.
 - **Status** ints: `event-status.ts` (`Active = 0`, `Finished = 2`).
 
 ## Running locally

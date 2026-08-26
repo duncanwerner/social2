@@ -12,13 +12,19 @@ export function generateRounds(
   event: SocialEvent,
   count = 1,
 ): Promise<Round[]> {
+  // Players flagged `disabled` sit the next round out: fold them into the
+  // optimizer's force_sitting (deduped with any already configured), which pulls
+  // them from the pool and lists them as sitting rather than assigning a court.
+  const forced = new Set(event.options?.force_sitting ?? []);
+  for (const p of event.players) if (p.disabled) forced.add(p.id);
+
   return new Promise((resolve, reject) => {
     const worker = new SocialWorker();
     const message: RoundMessage = {
       players: event.players.map((p) => p.id),
       courts: event.courts.length,
       rounds: event.rounds ?? [],
-      options: event.options ?? {},
+      options: { ...(event.options ?? {}), force_sitting: [...forced] },
       count,
     };
     worker.onmessage = (e: MessageEvent) => {

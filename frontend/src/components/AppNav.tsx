@@ -25,13 +25,13 @@ export function AppNav() {
               type="button"
               onClick={() => navigate("/login")}
             >
-              Log in
+              Sign in
             </button>
           }
         >
           <span class="nav-user">{user()?.username}</span>
           <button class="link" type="button" onClick={doLogout}>
-            Log out
+            Sign out
           </button>
         </Show>
       </div>

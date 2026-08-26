@@ -7,6 +7,7 @@ import {
   type RouteSectionProps,
 } from "@solidjs/router";
 import { getRecord, updateRecord } from "../../records";
+import { findLocalIdForRecord } from "../../event-store";
 import { ApiError } from "../../api-error";
 import { createSocket, type SocketClient } from "../../socket";
 import { isRecordUpdate } from "../../protocol";
@@ -90,11 +91,21 @@ export default function ViewLayout(props: RouteSectionProps) {
     save,
   };
 
+  // If this browser holds the local copy that created the record, the owner can
+  // jump back to the editor (keyed by local id). Missing → no edit link shown.
+  const editLocalId = findLocalIdForRecord(params.id);
+
   const base = () => `/view/${params.id}`;
   const isActive = (suffix: "" | "/rounds" | "/stats") =>
     location.pathname.replace(/\/$/, "") === base() + suffix;
 
   const pill = (): { label: string; cls: string } => {
+    // A finished event is terminal — show "Finished" regardless of the socket's
+    // transient state (closing the socket on the finish broadcast briefly reports
+    // "closed" before it settles).
+    if (isFinished(eventStatus())) {
+      return { label: "Finished", cls: "pill-finished" };
+    }
     switch (connection()) {
       case "open":
         return { label: "Live", cls: "pill-live" };
@@ -122,6 +133,15 @@ export default function ViewLayout(props: RouteSectionProps) {
         <ViewContext value={live}>
           <div class="view">
             <div class="view-status">
+              <Show when={isOwner() && editLocalId}>
+                <button
+                  type="button"
+                  class="link edit-link"
+                  onClick={() => navigate(`/update-event/${editLocalId}`)}
+                >
+                  Edit event
+                </button>
+              </Show>
               <span class={`pill ${pill().cls}`}>{pill().label}</span>
             </div>
             <div class="view-body">{props.children}</div>

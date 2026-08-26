@@ -11,8 +11,9 @@ import {
   saveEvent,
   saveRecordRef,
 } from "../event-store";
-import { ApiError, createRecord, updateRecord } from "../records";
+import { ApiError, createRecord, getRecord, updateRecord } from "../records";
 import { isAuthenticated } from "../auth";
+import { EventStatus, isFinished } from "../event-status";
 
 const PLAYER_MIN = 0;
 const PLAYER_MAX = 40;
@@ -49,6 +50,7 @@ export function EventEditor() {
 
   const [evName, setEvName] = createSignal(initial.metadata.name);
   const [evDate, setEvDate] = createSignal(initial.metadata.date);
+  const [evTime, setEvTime] = createSignal(initial.metadata.time ?? "");
   const [evLocation, setEvLocation] = createSignal(initial.metadata.location);
   const [evDescription, setEvDescription] = createSignal(
     initial.metadata.description,
@@ -60,10 +62,52 @@ export function EventEditor() {
   const [courtNames, setCourtNames] = createSignal<string[]>(
     initial.courts.map((c) => c.name ?? ""),
   );
+  // Parallel to playerNames by index (index === PlayerID): true = sitting out.
+  const [playerDisabled, setPlayerDisabled] = createSignal<boolean[]>(
+    initial.players.map((p) => !!p.disabled),
+  );
 
   const [linkedRef, setLinkedRef] = createSignal(
     editingId ? loadRecordRef(editingId) : null,
   );
+  // Backend record status (drives the Finish/Reopen control); null until loaded.
+  const [recordStatus, setRecordStatus] = createSignal<number | null>(null);
+  const [finishing, setFinishing] = createSignal(false);
+
+  // Load the record's status for a synced event being edited.
+  void (async () => {
+    const ref = editingId ? loadRecordRef(editingId) : null;
+    if (!ref || !isAuthenticated()) return;
+    try {
+      setRecordStatus((await getRecord(ref.id)).status);
+    } catch {
+      /* offline or gone — leave null; the control stays disabled */
+    }
+  })();
+
+  // Finish the event (status → Finished) so viewers go read-only and no new
+  // sockets open; or reopen it (→ Active). The update broadcasts, so live viewers
+  // switch immediately. Same button both ways for symmetry (and testing).
+  async function toggleFinished() {
+    const ref = linkedRef();
+    const current = recordStatus();
+    if (!ref || current === null || finishing()) return;
+    const next = isFinished(current)
+      ? EventStatus.Active
+      : EventStatus.Finished;
+    setFinishing(true);
+    setSync("");
+    try {
+      const res = await updateRecord({ id: ref.id, status: next });
+      setRecordStatus(res.status);
+      setSync(isFinished(res.status) ? "Event finished." : "Event reopened.");
+    } catch (err) {
+      const reason = err instanceof ApiError ? err.message : String(err);
+      setSync(`Could not update status — ${reason}`);
+    } finally {
+      setFinishing(false);
+    }
+  }
   const [showPlayers, setShowPlayers] = createSignal(false);
   const [showCourts, setShowCourts] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
@@ -120,12 +164,56 @@ export function EventEditor() {
     setSaved(false);
   };
 
+  // Player count drives two parallel arrays (names + disabled flags); resize both
+  // together so index === PlayerID stays true.
+  const resizePlayers = (n: number) => {
+    const target = Math.max(PLAYER_MIN, Math.min(PLAYER_MAX, Math.floor(n) || 0));
+    setPlayerNames((prev) => {
+      const next = prev.slice(0, target);
+      while (next.length < target) next.push("");
+      return next;
+    });
+    setPlayerDisabled((prev) => {
+      const next = prev.slice(0, target);
+      while (next.length < target) next.push(false);
+      return next;
+    });
+    setSaved(false);
+  };
+
+  const togglePlayerDisabled = (i: number) => {
+    setPlayerDisabled((prev) => {
+      const next = prev.slice();
+      next[i] = !next[i];
+      return next;
+    });
+    setSaved(false);
+  };
+
   async function save() {
+    const id = editingId ?? newEventId();
+    const existingRef = loadRecordRef(id);
+
+    // Base for the fields the form doesn't edit — rounds, scores, options. The
+    // live rounds page writes those straight to the backend record, so the record
+    // can be newer than this browser's localStorage copy. Merge onto the fetched
+    // record (not stale `initial`), or a save here would wipe the rounds. If the
+    // record is gone or unreachable, fall back to the local copy.
+    let base: SocialEvent = initial;
+    if (existingRef && isAuthenticated()) {
+      try {
+        base = (await getRecord(existingRef.id)).data as SocialEvent;
+      } catch {
+        /* record gone or offline — keep the local base */
+      }
+    }
+
     const event: SocialEvent = {
-      ...initial, // preserve rounds/options when editing
+      ...base, // preserve rounds/options/scores when editing
       players: playerNames().map((name, i) => ({
         id: CreatePlayerID(i),
         name: name.trim(),
+        ...(playerDisabled()[i] ? { disabled: true } : {}),
       })),
       courts: courtNames().map((name) =>
         name.trim() ? { name: name.trim() } : {},
@@ -135,9 +223,9 @@ export function EventEditor() {
         description: evDescription().trim(),
         location: evLocation().trim(),
         date: evDate(),
+        time: evTime().trim(),
       },
     };
-    const id = editingId ?? newEventId();
     saveEvent(id, event);
     setSaved(true);
 
@@ -157,18 +245,23 @@ export function EventEditor() {
       };
 
       try {
-        const ref = loadRecordRef(id);
-        if (ref) {
+        if (existingRef) {
           try {
-            const updated = await updateRecord({ id: ref.id, data: event });
+            const updated = await updateRecord({
+              id: existingRef.id,
+              data: event,
+            });
             setSync(
-              `Updated record ${ref.id} (delivered ${updated.delivered})`,
+              `Updated record ${existingRef.id} (delivered ${updated.delivered})`,
             );
           } catch (err) {
             // The linked record is gone on the backend — self-heal by
             // re-creating it (keeping the same channel).
             if (err instanceof ApiError && err.status === 404) {
-              await create(ref.channel, "Re-created record (previous link was stale)");
+              await create(
+                existingRef.channel,
+                "Re-created record (previous link was stale)",
+              );
             } else {
               throw err;
             }
@@ -191,9 +284,22 @@ export function EventEditor() {
   return (
     <main class="editor">
       <header class="editor-head">
-        <button class="link" type="button" onClick={() => navigate("/")}>
-          ← Home
-        </button>
+        <div class="editor-nav">
+          <button class="link" type="button" onClick={() => navigate("/")}>
+            ← Home
+          </button>
+          {/* Converse of the view page's "Edit event" link: jump to the player
+              view once the event has been synced to a record. */}
+          <Show when={linkedRef()}>
+            <button
+              class="link"
+              type="button"
+              onClick={() => navigate(`/view/${linkedRef()!.id}`)}
+            >
+              View as player →
+            </button>
+          </Show>
+        </div>
         <h1>{editingId ? "Edit social" : "New social"}</h1>
       </header>
 
@@ -223,17 +329,28 @@ export function EventEditor() {
             />
           </label>
           <label class="field">
-            <span>Location</span>
+            <span>Time</span>
             <input
-              value={evLocation()}
+              value={evTime()}
               onInput={(e) => {
-                setEvLocation(e.currentTarget.value);
+                setEvTime(e.currentTarget.value);
                 setSaved(false);
               }}
-              placeholder="Club courts"
+              placeholder="11:00 – 1:00"
             />
           </label>
         </div>
+        <label class="field">
+          <span>Location</span>
+          <input
+            value={evLocation()}
+            onInput={(e) => {
+              setEvLocation(e.currentTarget.value);
+              setSaved(false);
+            }}
+            placeholder="Club courts"
+          />
+        </label>
         <label class="field">
           <span>Description</span>
           <textarea
@@ -258,14 +375,7 @@ export function EventEditor() {
             <button
               type="button"
               aria-label="Fewer players"
-              onClick={() =>
-                resize(
-                  setPlayerNames,
-                  playerNames().length - 1,
-                  PLAYER_MIN,
-                  PLAYER_MAX,
-                )
-              }
+              onClick={() => resizePlayers(playerNames().length - 1)}
             >
               −
             </button>
@@ -276,26 +386,12 @@ export function EventEditor() {
               min={PLAYER_MIN}
               max={PLAYER_MAX}
               value={playerNames().length}
-              onInput={(e) =>
-                resize(
-                  setPlayerNames,
-                  Number(e.currentTarget.value),
-                  PLAYER_MIN,
-                  PLAYER_MAX,
-                )
-              }
+              onInput={(e) => resizePlayers(Number(e.currentTarget.value))}
             />
             <button
               type="button"
               aria-label="More players"
-              onClick={() =>
-                resize(
-                  setPlayerNames,
-                  playerNames().length + 1,
-                  PLAYER_MIN,
-                  PLAYER_MAX,
-                )
-              }
+              onClick={() => resizePlayers(playerNames().length + 1)}
             >
               +
             </button>
@@ -308,13 +404,20 @@ export function EventEditor() {
             aria-expanded={showPlayers() ? "true" : "false"}
             onClick={() => setShowPlayers(!showPlayers())}
           >
-            <span class="chevron">{showPlayers() ? "▾" : "▸"}</span> Name players
+            <span class="chevron">{showPlayers() ? "▾" : "▸"}</span> Manage
+            players
           </button>
           <Show when={showPlayers()}>
             <div class="name-grid">
               <For each={playerNames()} keyed={false}>
                 {(name, i) => (
-                  <label class="name-field">
+                  <div
+                    class={
+                      playerDisabled()[i]
+                        ? "name-field player-out"
+                        : "name-field"
+                    }
+                  >
                     <span class="name-index">{i + 1}</span>
                     <input
                       value={name()}
@@ -323,7 +426,18 @@ export function EventEditor() {
                       }
                       placeholder={`Player ${i + 1}`}
                     />
-                  </label>
+                    <label
+                      class="sit-toggle"
+                      title="Sit this player out of the next generated round"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!playerDisabled()[i]}
+                        onChange={() => togglePlayerDisabled(i)}
+                      />
+                      Sit
+                    </label>
+                  </div>
                 )}
               </For>
             </div>
@@ -390,7 +504,7 @@ export function EventEditor() {
           aria-expanded={showCourts() ? "true" : "false"}
           onClick={() => setShowCourts(!showCourts())}
         >
-          <span class="chevron">{showCourts() ? "▾" : "▸"}</span> Name courts
+          <span class="chevron">{showCourts() ? "▾" : "▸"}</span> Manage courts
         </button>
         <Show when={showCourts()}>
           <div class="name-grid">
@@ -430,6 +544,33 @@ export function EventEditor() {
           <p class="hint">
             Channel <code>{linkedRef()?.channel}</code>
           </p>
+        </section>
+      </Show>
+
+      <Show when={linkedRef() && recordStatus() !== null}>
+        <section class="card status-card">
+          <div class="status-row">
+            <div class="status-text">
+              <h2>{isFinished(recordStatus()!) ? "Finished" : "Active"}</h2>
+              <p class="hint">
+                {isFinished(recordStatus()!)
+                  ? "Viewers are read-only; no live connections open."
+                  : "Viewers connect live and see updates as they happen."}
+              </p>
+            </div>
+            <button
+              type="button"
+              class={isFinished(recordStatus()!) ? "secondary" : "danger"}
+              disabled={finishing()}
+              onClick={toggleFinished}
+            >
+              {finishing()
+                ? "Saving…"
+                : isFinished(recordStatus()!)
+                  ? "Reopen"
+                  : "Finish event"}
+            </button>
+          </div>
         </section>
       </Show>
 
