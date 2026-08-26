@@ -1,5 +1,6 @@
 import { BACKEND_URL, normalizeBase } from "./api";
 import { ApiError, parseOrThrow } from "./api-error";
+import { untrack } from "solid-js";
 import { clearAuth, token } from "./auth";
 import type { RecordEntity, UpdateRecordResponse } from "./protocol";
 import type { SocialEvent } from "./types";
@@ -14,7 +15,9 @@ export { ApiError };
 /** JSON headers plus the bearer token when signed in. */
 function headers(): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
-  const t = token();
+  // Point-in-time read: a request captures the current token; building headers
+  // must never subscribe (this runs during render on some load paths).
+  const t = untrack(token);
   if (t) h.Authorization = `Bearer ${t}`;
   return h;
 }

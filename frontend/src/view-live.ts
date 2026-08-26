@@ -3,8 +3,8 @@ import type { SocialEvent } from "./types";
 import type { SocketStatus } from "./socket";
 
 // Shared live state for the /view/:id layout and its child pages. The layout
-// loads the record once and (unless finished) subscribes to its channel; children
-// read the reactive event + connection state from here.
+// loads the record (keyed on the id) and, unless finished, subscribes to its
+// channel; children read the reactive event + connection state from here.
 
 /** Connection state as shown to viewers. */
 export type ViewConnection = SocketStatus | "loading" | "static";

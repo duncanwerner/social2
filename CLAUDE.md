@@ -54,9 +54,12 @@ Key files: `backend/src/index.ts` (routing), `backend/src/channel-hub.ts` (DO),
 
 Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
 
-- **Owner flow.** `/login` → guard; `/create-event` and `/update-event/:localId`
+- **Owner flow.** `/login` → guard; `/create-event` and `/update-event/:id`
   (`components/EventEditor.tsx`) are the setup surface (roster/courts/metadata),
-  saved locally (`event-store.ts`) and pushed to the backend as a record. The
+  saved locally (`event-store.ts`) and pushed to the backend as a record.
+  `EventEditor` snapshots the route id at mount to seed its form signals, so the
+  `/update-event/:id` route wraps it in `<Show keyed when={params.id}>` to force a
+  fresh mount if the id changes (the router would otherwise reuse the instance). The
   update page has: a shareable `/view/{recordId}` player link + a "View as player"
   link, per-player **Sit** checkboxes (temporarily bench a player — see optimizer
   note), a free-text event **time** (opaque, so ranges like "11:00 – 1:00" work),
@@ -73,9 +76,11 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
   `initial`), or the save would wipe the rounds. Any field the form doesn't render
   must be preserved this way.
 - **Player flow.** `/view/:id` is a **layout** (`routes/view/[id].tsx`) that loads
-  the record once (public `get-event`) and — unless the event is finished —
-  subscribes to its channel (`socket.ts`, auto-reconnect); it shares state with its
-  child pages via a context (`view-live.ts`). Children: `index.tsx` (info),
+  the record (public `get-event`) and — unless the event is finished — subscribes
+  to its channel (`socket.ts`, auto-reconnect) in a `createEffect` **keyed on the
+  id** (so /view/A → /view/B, which reuses the mounted layout, reloads + resubscribes;
+  the effect returns its cleanup to tear down the old socket). It shares state with
+  its child pages via a context (`view-live.ts`). Children: `index.tsx` (info),
   `rounds.tsx` (live rounds), `stats.tsx` (league table). A finished status shows
   a "Finished" pill and opens no socket (the pill is derived from event status, not
   the transient socket state). Bad id → `ErrorView`.

@@ -1,4 +1,4 @@
-import { createEffect, createSignal, onCleanup } from "solid-js";
+import { createEffect, createSignal, onCleanup, untrack } from "solid-js";
 import { For, Show } from "@solidjs/web";
 import { useLocation, useNavigate, useParams } from "@solidjs/router";
 import { CreatePlayerID } from "../social";
@@ -30,18 +30,28 @@ export function EventEditor() {
   const params = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  // `params.id` is undefined on /create-event.
-  const editingId = params.id;
+  // `params.id` is undefined on /create-event. Snapshotted at mount (untrack):
+  // it seeds `initial` and the form signals below, so the editor is bound to one
+  // event per mount. Every in-app path here is a fresh mount (create→update and
+  // view→edit are route changes; tabs keep the id), so the id never changes under
+  // us. NB: a direct /update-event/A → /update-event/B URL change would keep this
+  // mounted and go stale — the route keys EventEditor on the id to force a remount.
+  const editingId = untrack(() => params.id);
 
   // Guard: bounce to /login (remembering where we were) when not signed in.
   createEffect(
     () => isAuthenticated(),
     (authed) => {
-      if (!authed) {
-        navigate(`/login?redirect=${encodeURIComponent(location.pathname)}`, {
+      if (authed) return;
+      // Point-in-time: capture the current path to return to after login.
+      const from = untrack(() => location.pathname);
+      // Defer the navigate: calling it inside the effect callback runs during the
+      // in-progress flush (a no-op flush warning); a microtask redirects cleanly.
+      queueMicrotask(() =>
+        navigate(`/login?redirect=${encodeURIComponent(from)}`, {
           replace: true,
-        });
-      }
+        }),
+      );
     },
   );
 
@@ -77,7 +87,7 @@ export function EventEditor() {
   // Load the record's status for a synced event being edited.
   void (async () => {
     const ref = editingId ? loadRecordRef(editingId) : null;
-    if (!ref || !isAuthenticated()) return;
+    if (!ref || !untrack(isAuthenticated)) return;
     try {
       setRecordStatus((await getRecord(ref.id)).status);
     } catch {
@@ -111,7 +121,7 @@ export function EventEditor() {
   const [showPlayers, setShowPlayers] = createSignal(false);
   const [showCourts, setShowCourts] = createSignal(false);
   // A freshly-loaded synced event starts "saved"; a brand-new one starts unsaved.
-  const [saved, setSaved] = createSignal(linkedRef() !== null);
+  const [saved, setSaved] = createSignal(untrack(linkedRef) !== null);
   const [syncing, setSyncing] = createSignal(false);
   const [sync, setSync] = createSignal("");
   const [copied, setCopied] = createSignal(false);
@@ -296,8 +306,9 @@ export function EventEditor() {
   const AUTOSAVE_MS = 1000;
   let autoTimer: ReturnType<typeof setTimeout> | undefined;
   const scheduleAutoSave = () => {
-    const ref = linkedRef();
-    if (!ref || !isAuthenticated()) return; // brand-new event: wait for Create
+    // Runs from the autosave effect (a non-tracking scope); read current values.
+    const ref = untrack(linkedRef);
+    if (!ref || !untrack(isAuthenticated)) return; // brand-new event: wait for Create
     setSaved(false);
     if (autoTimer) clearTimeout(autoTimer);
     autoTimer = setTimeout(() => {
@@ -318,7 +329,9 @@ export function EventEditor() {
       c: courtNames(),
       dis: playerDisabled(),
     });
-  const initialSnapshot = snapshot();
+  // Untracked: a one-time capture of the form's initial serialized state. The
+  // effect below compares against it to skip the mount fire (and reverts).
+  const initialSnapshot = untrack(snapshot);
   createEffect(snapshot, (snap) => {
     if (snap === initialSnapshot) return; // mount / reverted — nothing to save
     scheduleAutoSave();
@@ -328,7 +341,7 @@ export function EventEditor() {
   onCleanup(() => {
     if (autoTimer) {
       clearTimeout(autoTimer);
-      const ref = linkedRef();
+      const ref = untrack(linkedRef);
       if (ref) void persist(ref);
     }
   });

@@ -1,4 +1,4 @@
-import { createSignal, onCleanup } from "solid-js";
+import { createEffect, createMemo, createSignal } from "solid-js";
 import { Show } from "@solidjs/web";
 import {
   useLocation,
@@ -16,9 +16,10 @@ import { ErrorView } from "../../components/ErrorView";
 import { ViewContext, type ViewConnection, type ViewLive } from "../../view-live";
 import type { SocialEvent } from "../../types";
 
-// Layout for /view/:id/*. Loads the record once (public GET); if the event isn't
-// finished, subscribes to its channel for live updates. Shares the reactive event
-// with the child pages (info / rounds / stats) via ViewContext.
+// Layout for /view/:id/*. Loads the record (public GET) keyed on the id; if the
+// event isn't finished, subscribes to its channel for live updates. Re-loads and
+// re-subscribes if the id changes while mounted. Shares the reactive event with
+// the child pages (info / rounds / stats) via ViewContext.
 export default function ViewLayout(props: RouteSectionProps) {
   const params = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -30,50 +31,71 @@ export default function ViewLayout(props: RouteSectionProps) {
   const [error, setError] = createSignal<string | null>(null);
   const [isOwner, setIsOwner] = createSignal(false);
 
-  let client: SocketClient | undefined;
-  let disposed = false;
-  onCleanup(() => {
-    disposed = true;
-    client?.close();
-  });
+  // Load the record and (unless finished) subscribe to its channel — keyed on the
+  // record id. The router keeps this layout mounted when navigating /view/A →
+  // /view/B (it just updates the param), so the load/subscribe re-runs on id
+  // change: the returned cleanup tears down A's socket before B loads, and the
+  // `cancelled` flag drops any in-flight A response that resolves after we've
+  // moved on. (Solid 2 effects return their cleanup — onCleanup isn't valid here.)
+  createEffect(
+    () => params.id,
+    (id) => {
+      let cancelled = false;
+      let client: SocketClient | undefined;
+      // Reset to the loading state for the new id.
+      setEvent(null);
+      setError(null);
+      setIsOwner(false);
+      setConnection("loading");
 
-  void (async () => {
-    try {
-      const record = await getRecord(params.id);
-      if (disposed) return;
-      setEvent(record.data as SocialEvent);
-      setEventStatus(record.status);
-      setIsOwner(record.owner === true);
+      void (async () => {
+        try {
+          const record = await getRecord(id);
+          if (cancelled) return;
+          setEvent(record.data as SocialEvent);
+          setEventStatus(record.status);
+          setIsOwner(record.owner === true);
 
-      if (isFinished(record.status)) {
-        setConnection("static"); // no updates will ever come
-        return;
-      }
-
-      client = createSocket({
-        channel: record.channel,
-        reconnect: true,
-        onStatus: (s) => setConnection(s),
-        onEvent: (msg) => {
-          if (!isRecordUpdate(msg)) return;
-          setEvent(msg.record.data as SocialEvent);
-          setEventStatus(msg.record.status);
-          if (isFinished(msg.record.status)) {
-            client?.close();
-            setConnection("static");
+          if (isFinished(record.status)) {
+            setConnection("static"); // no updates will ever come
+            return;
           }
-        },
-      });
-      if (disposed) {
-        client.close();
-        return;
-      }
-      client.connect();
-    } catch (err) {
-      if (disposed) return;
-      setError(err instanceof ApiError && err.status === 404 ? "not_found" : "error");
-    }
-  })();
+
+          client = createSocket({
+            channel: record.channel,
+            reconnect: true,
+            onStatus: (s) => {
+              if (!cancelled) setConnection(s);
+            },
+            onEvent: (msg) => {
+              if (cancelled || !isRecordUpdate(msg)) return;
+              setEvent(msg.record.data as SocialEvent);
+              setEventStatus(msg.record.status);
+              if (isFinished(msg.record.status)) {
+                client?.close();
+                setConnection("static");
+              }
+            },
+          });
+          if (cancelled) {
+            client.close();
+            return;
+          }
+          client.connect();
+        } catch (err) {
+          if (cancelled) return;
+          setError(
+            err instanceof ApiError && err.status === 404 ? "not_found" : "error",
+          );
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        client?.close();
+      };
+    },
+  );
 
   // Owner-only: optimistically update, then persist (which broadcasts to all
   // viewers). The broadcast echo re-applies the same value (idempotent).
@@ -86,14 +108,19 @@ export default function ViewLayout(props: RouteSectionProps) {
     event,
     eventStatus,
     connection,
-    recordId: params.id,
+    // Getter so consumers read the current id even if the layout is reused
+    // across ids (see the load effect above).
+    get recordId() {
+      return params.id;
+    },
     isOwner,
     save,
   };
 
   // If this browser holds the local copy that created the record, the owner can
   // jump back to the editor (keyed by local id). Missing → no edit link shown.
-  const editLocalId = findLocalIdForRecord(params.id);
+  // Memoized on the id so it re-resolves when the layout is reused across ids.
+  const editLocalId = createMemo(() => findLocalIdForRecord(params.id));
 
   const base = () => `/view/${params.id}`;
   const isActive = (suffix: "" | "/rounds" | "/stats") =>
@@ -133,11 +160,11 @@ export default function ViewLayout(props: RouteSectionProps) {
         <ViewContext value={live}>
           <div class="view">
             <div class="view-status">
-              <Show when={isOwner() && editLocalId}>
+              <Show when={isOwner() && editLocalId()}>
                 <button
                   type="button"
                   class="link edit-link"
-                  onClick={() => navigate(`/update-event/${editLocalId}`)}
+                  onClick={() => navigate(`/update-event/${editLocalId()}`)}
                 >
                   Edit event
                 </button>

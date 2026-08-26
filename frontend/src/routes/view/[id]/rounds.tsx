@@ -1,4 +1,4 @@
-import { createEffect, createSignal } from "solid-js";
+import { createEffect, createSignal, untrack } from "solid-js";
 import { For, Show } from "@solidjs/web";
 import { useViewLive } from "../../../view-live";
 import { generateRounds } from "../../../round-worker";
@@ -35,10 +35,14 @@ export default function ViewRounds() {
   // echo included).
   createEffect(
     () => `${viewIdx()}|${rounds().length}`,
-    () => {
-      const r = rounds()[viewIdx()];
-      setDraft(r ? r.matchups.map((m) => [m.score[0], m.score[1]]) : []);
-    },
+    () =>
+      // Point-in-time read: the effect keys on the string above and must NOT
+      // subscribe to rounds()/viewIdx() here (per the note above), else a content
+      // change with the same length re-runs it and wipes in-progress edits.
+      untrack(() => {
+        const r = rounds()[viewIdx()];
+        setDraft(r ? r.matchups.map((m) => [m.score[0], m.score[1]]) : []);
+      }),
   );
 
   const round = () => rounds()[viewIdx()];
