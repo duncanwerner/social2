@@ -1,0 +1,23 @@
+{
+  "name": "rotation-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solidjs/router": "2.0.0-next.18",
+    "@solidjs/web": "2.0.0-rc.3",
+    "solid-js": "2.0.0-rc.3"
+  },
+  "devDependencies": {
+    "@solidjs/vite-plugin": "^3.0.0-next.33",
+    "filesystem-routing": "^0.2.1",
+    "typescript": "~5.9.3",
+    "vite": "^8.2.0"
+  }
+}

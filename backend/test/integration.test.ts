@@ -1,5 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
+import { constantTimeEqual, hashPassword, verifyPassword } from "../src/auth";
 
 // Apply the D1 schema to the test's isolated storage. Each statement must be a
 // single line for env.DB.exec (which splits its input on newlines).
@@ -12,12 +13,63 @@ const SCHEMA = [
      created_at TEXT NOT NULL DEFAULT (datetime('now'))
    )`,
   `CREATE INDEX IF NOT EXISTS idx_events_channel ON events (channel, id)`,
+  `CREATE TABLE IF NOT EXISTS records (
+     id TEXT PRIMARY KEY,
+     status INTEGER NOT NULL DEFAULT 0,
+     data TEXT NOT NULL,
+     ownerid TEXT NOT NULL,
+     channel TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_records_channel ON records (channel)`,
+  `CREATE TABLE IF NOT EXISTS users (
+     id TEXT PRIMARY KEY,
+     username TEXT NOT NULL UNIQUE,
+     password TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   )`,
+  `CREATE TABLE IF NOT EXISTS sessions (
+     token_hash TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+     expires_at TEXT NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)`,
 ];
+
+// Two seeded users for the auth + records tests.
+const OWNER = { id: "user-owner", username: "owner", password: "pw-owner-123" };
+const OTHER = { id: "user-other", username: "other", password: "pw-other-123" };
+let ownerToken = "";
+let otherToken = "";
+
+async function seedUser(u: { id: string; username: string; password: string }) {
+  await env.DB.prepare(
+    "INSERT INTO users (id, username, password) VALUES (?, ?, ?)",
+  )
+    .bind(u.id, u.username, await hashPassword(u.password))
+    .run();
+}
+
+function login(username: string, password: string) {
+  return SELF.fetch("https://example.com/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
 
 beforeAll(async () => {
   for (const stmt of SCHEMA) {
     await env.DB.exec(stmt.replace(/\s+/g, " ").trim());
   }
+  await seedUser(OWNER);
+  await seedUser(OTHER);
+  ownerToken = ((await (await login(OWNER.username, OWNER.password)).json()) as {
+    token: string;
+  }).token;
+  otherToken = ((await (await login(OTHER.username, OTHER.password)).json()) as {
+    token: string;
+  }).token;
 });
 
 describe("do-sockets backend", () => {
@@ -76,5 +128,247 @@ describe("do-sockets backend", () => {
   it("rejects invalid channel names", async () => {
     const res = await SELF.fetch("https://example.com/history?channel=bad%20name");
     expect(res.status).toBe(400);
+  });
+});
+
+function authHeaders(token: string) {
+  return { "content-type": "application/json", Authorization: `Bearer ${token}` };
+}
+
+describe("records HTTP API", () => {
+  function createRecord(body: unknown, token = ownerToken) {
+    return SELF.fetch("https://example.com/create-event", {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    });
+  }
+
+  function updateEvent(body: unknown, token = ownerToken) {
+    return SELF.fetch("https://example.com/update-event", {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("creates a record and reads it back", async () => {
+    const res = await createRecord({
+      data: { title: "Sat social" },
+      channel: "rec-1",
+    });
+    expect(res.status).toBe(201);
+    const created = (await res.json()) as {
+      id: string;
+      status: number;
+      data: unknown;
+      ownerid?: string;
+      channel: string;
+      created_at: string;
+    };
+    expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(created.status).toBe(0);
+    expect(created.data).toEqual({ title: "Sat social" });
+    expect(created.channel).toBe("rec-1");
+    // ownerid is write-only — never returned to clients.
+    expect(created.ownerid).toBeUndefined();
+
+    const got = await SELF.fetch(
+      `https://example.com/get-event?id=${created.id}`,
+    );
+    expect(got.status).toBe(200);
+    const fetched = (await got.json()) as {
+      id: string;
+      data: unknown;
+      ownerid?: string;
+    };
+    expect(fetched.id).toBe(created.id);
+    expect(fetched.data).toEqual({ title: "Sat social" });
+    expect(fetched.ownerid).toBeUndefined();
+  });
+
+  it("returns 404 for an unknown record id", async () => {
+    const res = await SELF.fetch(
+      "https://example.com/get-event?id=does-not-exist",
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { error: string }).toEqual({
+      error: "event_not_found",
+    });
+  });
+
+  it("updates status/data and reflects it on a later read", async () => {
+    const created = (await (
+      await createRecord({ data: { n: 1 }, channel: "rec-2" })
+    ).json()) as { id: string };
+
+    const upd = await updateEvent({ id: created.id, status: 2, data: { n: 2 } });
+    expect(upd.status).toBe(200);
+    const updated = (await upd.json()) as { status: number; data: unknown };
+    expect(updated.status).toBe(2);
+    expect(updated.data).toEqual({ n: 2 });
+
+    const got = (await (
+      await SELF.fetch(`https://example.com/get-event?id=${created.id}`)
+    ).json()) as { status: number; data: unknown };
+    expect(got.status).toBe(2);
+    expect(got.data).toEqual({ n: 2 });
+  });
+
+  it("broadcasts the updated record to sockets on its channel", async () => {
+    const created = (await (
+      await createRecord({ data: { n: 0 }, channel: "rec-live" })
+    ).json()) as { id: string };
+
+    const wsRes = await SELF.fetch(
+      "https://example.com/connect?channel=rec-live",
+      { headers: { Upgrade: "websocket" } },
+    );
+    expect(wsRes.status).toBe(101);
+    const ws = wsRes.webSocket!;
+    ws.accept();
+
+    const got = new Promise<string>((resolve) => {
+      ws.addEventListener("message", (e: MessageEvent) => resolve(e.data as string), {
+        once: true,
+      });
+    });
+
+    const upd = await updateEvent({ id: created.id, status: 1 });
+    const updBody = (await upd.json()) as { delivered: number };
+    expect(updBody.delivered).toBe(1);
+
+    const msg = JSON.parse(await got) as {
+      kind: string;
+      record: { id: string; status: number; ownerid?: string };
+    };
+    expect(msg.kind).toBe("record.updated");
+    expect(msg.record.id).toBe(created.id);
+    expect(msg.record.status).toBe(1);
+    // the broadcast must not leak ownerid to viewers on the channel.
+    expect(msg.record.ownerid).toBeUndefined();
+  });
+
+  it("returns 404 when updating a missing record", async () => {
+    const res = await updateEvent({ id: "nope", status: 1 });
+    expect(res.status).toBe(404);
+  });
+
+  it("validates create and update bodies", async () => {
+    // missing data
+    expect((await createRecord({ channel: "c" })).status).toBe(400);
+    // invalid channel
+    expect(
+      (await createRecord({ data: {}, channel: "bad name" })).status,
+    ).toBe(400);
+
+    const created = (await (
+      await createRecord({ data: {}, channel: "rec-v" })
+    ).json()) as { id: string };
+
+    // missing id
+    expect((await updateEvent({ status: 1 })).status).toBe(400);
+    // no fields to update
+    expect((await updateEvent({ id: created.id })).status).toBe(400);
+  });
+});
+
+describe("auth", () => {
+  it("logs in and returns a token + user", async () => {
+    const res = await login(OWNER.username, OWNER.password);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      token: string;
+      user: { id: string; username: string };
+    };
+    expect(body.token).toBeTruthy();
+    expect(body.user).toEqual({ id: OWNER.id, username: OWNER.username });
+  });
+
+  it("rejects a wrong password and an unknown user identically", async () => {
+    expect((await login(OWNER.username, "wrong")).status).toBe(401);
+    expect((await login("ghost", "whatever")).status).toBe(401);
+  });
+
+  it("GET /me returns the user with a token, 401 without", async () => {
+    const me = await SELF.fetch("https://example.com/me", {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    expect(me.status).toBe(200);
+    expect(
+      ((await me.json()) as { user: { username: string } }).user.username,
+    ).toBe(OWNER.username);
+
+    expect((await SELF.fetch("https://example.com/me")).status).toBe(401);
+  });
+
+  it("create-event requires auth and derives ownerid from the session", async () => {
+    const noAuth = await SELF.fetch("https://example.com/create-event", {
+      method: "POST",
+      body: JSON.stringify({ data: {}, channel: "auth-c" }),
+    });
+    expect(noAuth.status).toBe(401);
+  });
+
+  it("get-event reports owner=true only for the record's owner", async () => {
+    const created = (await (
+      await SELF.fetch("https://example.com/create-event", {
+        method: "POST",
+        headers: authHeaders(ownerToken),
+        body: JSON.stringify({ data: { m: 1 }, channel: "owned-flag" }),
+      })
+    ).json()) as { id: string };
+
+    const getFlag = async (token?: string) =>
+      (await (
+        await SELF.fetch(`https://example.com/get-event?id=${created.id}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+      ).json()) as { owner?: boolean; ownerid?: string };
+
+    expect((await getFlag(ownerToken)).owner).toBe(true);
+    expect((await getFlag(otherToken)).owner).toBe(false);
+    const anon = await getFlag();
+    expect(anon.owner).toBe(false);
+    expect(anon.ownerid).toBeUndefined();
+  });
+
+  it("update-event is owner-only (403 for a different user)", async () => {
+    const created = (await (
+      await SELF.fetch("https://example.com/create-event", {
+        method: "POST",
+        headers: authHeaders(ownerToken),
+        body: JSON.stringify({ data: { a: 1 }, channel: "owned" }),
+      })
+    ).json()) as { id: string };
+
+    const forbidden = await SELF.fetch("https://example.com/update-event", {
+      method: "POST",
+      headers: authHeaders(otherToken),
+      body: JSON.stringify({ id: created.id, status: 5 }),
+    });
+    expect(forbidden.status).toBe(403);
+
+    const ok = await SELF.fetch("https://example.com/update-event", {
+      method: "POST",
+      headers: authHeaders(ownerToken),
+      body: JSON.stringify({ id: created.id, status: 5 }),
+    });
+    expect(ok.status).toBe(200);
+  });
+});
+
+describe("password hashing", () => {
+  it("verifies a correct password and rejects a wrong one", async () => {
+    const enc = await hashPassword("s3cret");
+    expect(enc.startsWith("pbkdf2$sha256$")).toBe(true);
+    expect(await verifyPassword("s3cret", enc)).toBe(true);
+    expect(await verifyPassword("nope", enc)).toBe(false);
+  });
+
+  it("constantTimeEqual compares byte arrays", () => {
+    expect(constantTimeEqual(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 3]))).toBe(true);
+    expect(constantTimeEqual(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 4]))).toBe(false);
+    expect(constantTimeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 2, 3]))).toBe(false);
   });
 });

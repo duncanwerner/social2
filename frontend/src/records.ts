@@ -1,0 +1,60 @@
+import { BACKEND_URL, normalizeBase } from "./api";
+import { ApiError, parseOrThrow } from "./api-error";
+import { clearAuth, token } from "./auth";
+import type { RecordEntity, UpdateRecordResponse } from "./protocol";
+import type { SocialEvent } from "./types";
+
+// HTTP client for the backend records API (/create-event, /get-event,
+// /update-event). The record's `data` blob is a SocialEvent. Mutations send the
+// bearer token; the owner is derived server-side from the session.
+
+// Re-exported for existing importers.
+export { ApiError };
+
+/** JSON headers plus the bearer token when signed in. */
+function headers(): Record<string, string> {
+  const h: Record<string, string> = { "content-type": "application/json" };
+  const t = token();
+  if (t) h.Authorization = `Bearer ${t}`;
+  return h;
+}
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  // An expired/revoked session — drop it so the UI can re-guard to /login.
+  if (res.status === 401) clearAuth();
+  return parseOrThrow<T>(res);
+}
+
+export function createRecord(
+  input: { data: SocialEvent; channel: string },
+  base: string = BACKEND_URL,
+): Promise<RecordEntity> {
+  return request<RecordEntity>(`${normalizeBase(base)}/create-event`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(input),
+  });
+}
+
+export function getRecord(
+  id: string,
+  base: string = BACKEND_URL,
+): Promise<RecordEntity> {
+  // Send the token when signed in so the backend can flag ownership (`owner`).
+  return request<RecordEntity>(
+    `${normalizeBase(base)}/get-event?id=${encodeURIComponent(id)}`,
+    { headers: headers() },
+  );
+}
+
+export function updateRecord(
+  input: { id: string; status?: number; data?: SocialEvent },
+  base: string = BACKEND_URL,
+): Promise<UpdateRecordResponse> {
+  return request<UpdateRecordResponse>(`${normalizeBase(base)}/update-event`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(input),
+  });
+}

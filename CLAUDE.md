@@ -28,26 +28,64 @@ low (dozens of clients, tens of events/hour).
   methods (NOT the in-memory `addEventListener` API) so it can evict between
   events. `setWebSocketAutoResponse` answers client `ping` with `pong` without
   waking the DO.
+- **Records.** First-class entities (padel socials) in the `records` D1 table
+  (`id` UUID, `status` int, `data` JSON, `ownerid`, `channel`, `created_at`),
+  managed over HTTP. `update-event` broadcasts the new record to its `channel` as
+  a `{ kind: "record.updated", record }` frame (reusing `stub.broadcast`).
 - **Endpoints:** `GET /connect?channel=X` (WS upgrade), `POST /publish`,
-  `GET /history?channel=X&limit=n`, `GET /healthz`. Channel names must match
+  `GET /history?channel=X&limit=n`, `POST /create-event`, `GET /get-event?id=X`,
+  `POST /update-event`, `GET /healthz`. Channel names must match
   `^[A-Za-z0-9._:-]{1,128}$`. HTTP endpoints send permissive CORS.
-- **Auth:** none yet, by design. Insertion points are marked `AUTH HOOK` in
-  `backend/src/index.ts` (connect + publish).
+- **Auth:** password login + long-lived bearer session tokens (`POST /login`,
+  `/logout`, `GET /me`). Users are seeded manually — no signup
+  (`npm run create-user -- <name>`). Passwords: PBKDF2-HMAC-SHA256 in
+  `backend/src/auth.ts`; sessions store the token's SHA-256 hash. `create-event`
+  and `update-event` require a token — the record owner is the authenticated user
+  (`ownerid` server-derived, never returned); `update-event` is owner-only (403).
+  `get-event` and `/connect` are public (viewers need no account; browsers can't
+  set headers on a WS upgrade, so gating `/connect` later means a `?token=` param).
+  Frontend keeps the token in `localStorage` and sends `Authorization: Bearer`.
 
 Key files: `backend/src/index.ts` (routing), `backend/src/channel-hub.ts` (DO),
-`backend/src/db.ts` (D1), `backend/schema.sql`, `backend/wrangler.jsonc`.
+`backend/src/db.ts` (D1), `backend/src/auth.ts` (PBKDF2 + tokens),
+`backend/schema.sql`, `backend/wrangler.jsonc`.
+
+## Architecture (frontend — `frontend/`, "Rotation")
+
+Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
+
+- **Owner flow.** `/login` → guard; `/create-event` and `/update-event/:localId`
+  (`components/EventEditor.tsx`) are the setup surface (roster/courts/metadata),
+  saved locally (`event-store.ts`) and pushed to the backend as a record. The
+  update page shows a shareable `/view/{recordId}` player link.
+- **Player flow.** `/view/:id` is a **layout** (`routes/view/[id].tsx`) that loads
+  the record once (public `get-event`) and — unless the event is finished —
+  subscribes to its channel (`socket.ts`, auto-reconnect); it shares state with its
+  child pages via a context (`view-live.ts`). Children: `index.tsx` (info),
+  `rounds.tsx` (live rounds), `stats.tsx` (stub). Bad id → `ErrorView`.
+- **Owner-on-view.** `get-event` returns `owner: true` for the owner's token, so the
+  rounds page shows owner controls: **generate round** (optimizer runs in a Web
+  Worker — `round-worker.ts` wrapping `social-worker.ts`/`social.ts`) and **score
+  entry**. Saving calls `update-event`, which broadcasts to every viewer live.
+- **Domain types** in `types.ts` (`SocialEvent`/`Player`/`Court`); the optimizer's
+  branded `PlayerID`/`Round` live in `social.ts`. Backend wire types in
+  `protocol.ts`; the records/auth clients in `records.ts` / `auth.ts`.
+- **Status** ints: `event-status.ts` (`Active = 0`, `Finished = 2`).
 
 ## Running locally
 
 ```bash
 # Backend — local Miniflare on :8787
 cd backend && npm install
-npm run db:init          # apply D1 schema to local storage (one-time)
+npm run db:init                 # apply D1 schema to local storage (one-time)
+npm run create-user -- <name>   # seed a login (prints a random password once)
 npm run dev
 
-# Test client — Vite on :5173
-cd test-client && npm install
-npm run dev              # open http://localhost:5173
+# Frontend — Vite on :5174
+cd frontend && npm install
+npm run dev                     # open http://localhost:5174
+
+# (test-client/ is a separate minimal pub/sub dev tool on :5173)
 ```
 
 `wrangler dev` runs fully local (Miniflare) and ignores the placeholder

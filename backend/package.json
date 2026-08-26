@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:init": "wrangler d1 execute do-sockets --local --file=./schema.sql",
-    "db:init:remote": "wrangler d1 execute do-sockets --remote --file=./schema.sql"
+    "db:init:remote": "wrangler d1 execute do-sockets --remote --file=./schema.sql",
+    "create-user": "node scripts/create-user.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
