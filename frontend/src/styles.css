@@ -414,6 +414,7 @@ button.secondary:disabled {
   color: var(--muted);
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 .standings td {
   padding: 10px 8px;

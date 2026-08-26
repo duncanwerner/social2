@@ -8,12 +8,34 @@ import {
   type StandingsMode,
 } from "../../../standings";
 
+// Scoring-view preference persists in sessionStorage (per browser tab) so paging
+// between the stats/rounds/info tabs — which remounts this page — keeps the view.
+const MODE_KEY = "rotation:stats-mode";
+function readMode(): StandingsMode {
+  try {
+    const v = sessionStorage.getItem(MODE_KEY);
+    return v === "matches" || v === "games" ? v : "games";
+  } catch {
+    return "games";
+  }
+}
+
 // /view/:id/stats — the league table. Two scoring views over the same results:
 // "Games" (games won/lost) and "Matches" (football points, 3/1/0). Live-updating
 // via the shared event.
 export default function ViewStats() {
   const live = useViewLive();
-  const [mode, setMode] = createSignal<StandingsMode>("games");
+  const [mode, setMode] = createSignal<StandingsMode>(readMode());
+
+  // Persist the choice as well as applying it.
+  const selectMode = (m: StandingsMode) => {
+    setMode(m);
+    try {
+      sessionStorage.setItem(MODE_KEY, m);
+    } catch {
+      /* ignore — storage unavailable (private mode, etc.) */
+    }
+  };
 
   const table = (): RankedStanding[] => {
     const ev = live.event();
@@ -55,7 +77,7 @@ export default function ViewStats() {
           role="tab"
           aria-selected={mode() === "games" ? "true" : "false"}
           class={mode() === "games" ? "seg-btn active" : "seg-btn"}
-          onClick={() => setMode("games")}
+          onClick={() => selectMode("games")}
         >
           Games
         </button>
@@ -64,7 +86,7 @@ export default function ViewStats() {
           role="tab"
           aria-selected={mode() === "matches" ? "true" : "false"}
           class={mode() === "matches" ? "seg-btn active" : "seg-btn"}
-          onClick={() => setMode("matches")}
+          onClick={() => selectMode("matches")}
         >
           Matches
         </button>
