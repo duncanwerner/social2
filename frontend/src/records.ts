@@ -2,7 +2,11 @@ import { BACKEND_URL, normalizeBase } from "./api";
 import { ApiError, parseOrThrow } from "./api-error";
 import { untrack } from "solid-js";
 import { clearAuth, token } from "./auth";
-import type { RecordEntity, UpdateRecordResponse } from "./protocol";
+import type {
+  MyEventsResponse,
+  RecordEntity,
+  UpdateRecordResponse,
+} from "./protocol";
 import type { SocialEvent } from "./types";
 
 // HTTP client for the backend records API (/create-event, /get-event,
@@ -47,6 +51,21 @@ export function getRecord(
   // Send the token when signed in so the backend can flag ownership (`owner`).
   return request<RecordEntity>(
     `${normalizeBase(base)}/get-event?id=${encodeURIComponent(id)}`,
+    { headers: headers() },
+  );
+}
+
+/**
+ * A page of the signed-in user's own records, newest first. `all` includes
+ * finished events (default is active-only). Sends the bearer token.
+ */
+export function listMyEvents(
+  input: { page: number; all: boolean },
+  base: string = BACKEND_URL,
+): Promise<MyEventsResponse> {
+  const query = `?page=${input.page}&all=${input.all ? "1" : "0"}`;
+  return request<MyEventsResponse>(
+    `${normalizeBase(base)}/my-events${query}`,
     { headers: headers() },
   );
 }

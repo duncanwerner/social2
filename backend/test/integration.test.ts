@@ -22,6 +22,7 @@ const SCHEMA = [
      created_at TEXT NOT NULL DEFAULT (datetime('now'))
    )`,
   `CREATE INDEX IF NOT EXISTS idx_records_channel ON records (channel)`,
+  `CREATE INDEX IF NOT EXISTS idx_records_owner ON records (ownerid, created_at)`,
   `CREATE TABLE IF NOT EXISTS users (
      id TEXT PRIMARY KEY,
      username TEXT NOT NULL UNIQUE,
@@ -355,6 +356,95 @@ describe("auth", () => {
       body: JSON.stringify({ id: created.id, status: 5 }),
     });
     expect(ok.status).toBe(200);
+  });
+});
+
+describe("GET /my-events", () => {
+  // A dedicated owner with a directly-seeded record set, so ordering and
+  // pagination are deterministic. (HTTP-created records all land in the same
+  // whole-second `created_at`, and the `id` tiebreaker is a random UUID — no
+  // stable creation order. Seeding explicit timestamps avoids that.)
+  const LISTER = { id: "user-lister", username: "lister", password: "pw-lister-1" };
+  let listerToken = "";
+
+  async function seedRecord(
+    id: string,
+    status: number,
+    created_at: string,
+    ownerid = LISTER.id,
+  ) {
+    await env.DB.prepare(
+      `INSERT INTO records (id, status, data, ownerid, channel, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(id, status, JSON.stringify({ id }), ownerid, `ch-${id}`, created_at)
+      .run();
+  }
+
+  function listMyEvents(query: string, token = listerToken) {
+    return SELF.fetch(`https://example.com/my-events${query}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+  type Listing = { records: Array<{ id: string; ownerid?: string }>; page: number; hasMore: boolean };
+
+  beforeAll(async () => {
+    await seedUser(LISTER);
+    listerToken = ((await (await login(LISTER.username, LISTER.password)).json()) as {
+      token: string;
+    }).token;
+
+    // 15 active records, created_at increasing (l-a-15 newest).
+    for (let i = 1; i <= 15; i++) {
+      const n = String(i).padStart(2, "0");
+      await seedRecord(`l-a-${n}`, 0, `2024-01-01 00:00:${n}`);
+    }
+    // 2 finished records, newest of all (2024-06-01).
+    await seedRecord("l-f-1", 2, "2024-06-01 00:00:01");
+    await seedRecord("l-f-2", 2, "2024-06-01 00:00:02");
+    // A record owned by someone else — must never appear in LISTER's listing.
+    await seedRecord("owner-only", 0, "2024-12-01 00:00:00", OWNER.id);
+  });
+
+  it("requires a bearer token", async () => {
+    const res = await SELF.fetch("https://example.com/my-events");
+    expect(res.status).toBe(401);
+  });
+
+  it("lists only the caller's records, newest first, without ownerid", async () => {
+    const body = (await (await listMyEvents("")).json()) as Listing;
+    // Only LISTER's records (the seeded 'l-' ids), never 'owner-only'.
+    expect(body.records.every((r) => r.id.startsWith("l-"))).toBe(true);
+    expect(body.records.some((r) => r.id === "owner-only")).toBe(false);
+    // ownerid is write-only.
+    expect(body.records.every((r) => r.ownerid === undefined)).toBe(true);
+    // Default (active only) → newest active first.
+    expect(body.records[0].id).toBe("l-a-15");
+  });
+
+  it("paginates 12 per page with a hasMore flag", async () => {
+    const p1 = (await (await listMyEvents("?page=1")).json()) as Listing;
+    expect(p1.records).toHaveLength(12);
+    expect(p1.hasMore).toBe(true);
+    expect(p1.records.map((r) => r.id)).toEqual([
+      "l-a-15", "l-a-14", "l-a-13", "l-a-12", "l-a-11", "l-a-10",
+      "l-a-09", "l-a-08", "l-a-07", "l-a-06", "l-a-05", "l-a-04",
+    ]);
+
+    const p2 = (await (await listMyEvents("?page=2")).json()) as Listing;
+    expect(p2.records.map((r) => r.id)).toEqual(["l-a-03", "l-a-02", "l-a-01"]);
+    expect(p2.hasMore).toBe(false);
+  });
+
+  it("hides finished records by default and includes them with all=1", async () => {
+    const active = (await (await listMyEvents("?all=0")).json()) as Listing;
+    expect(active.records.some((r) => r.id.startsWith("l-f-"))).toBe(false);
+
+    const all = (await (await listMyEvents("?all=1")).json()) as Listing;
+    // Finished records are the newest, so they lead the all listing.
+    expect(all.records[0].id).toBe("l-f-2");
+    expect(all.records[1].id).toBe("l-f-1");
+    expect(all.hasMore).toBe(true);
   });
 });
 

@@ -127,6 +127,33 @@ export async function getRecord(
 }
 
 /**
+ * Records owned by `ownerid`, newest first, one page at a time. `created_at` has
+ * whole-second granularity so `id` is the tiebreaker for a stable order. When
+ * `includeFinished` is false, Finished records (status 2) are omitted. Callers
+ * fetch `limit + 1` rows to detect a next page without a separate COUNT.
+ */
+export async function recordsByOwner(
+  env: Env,
+  ownerid: string,
+  opts: { limit: number; offset: number; includeFinished: boolean },
+): Promise<RecordEntity[]> {
+  const where = opts.includeFinished
+    ? "ownerid = ?"
+    : "ownerid = ? AND status = 0";
+  const result = await env.DB.prepare(
+    `SELECT id, status, data, ownerid, channel, created_at
+     FROM records
+     WHERE ${where}
+     ORDER BY created_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+  )
+    .bind(ownerid, opts.limit, opts.offset)
+    .all<RecordRow>();
+
+  return (result.results ?? []).map(toRecord);
+}
+
+/**
  * Update a record's mutable fields (`status` and/or `data`, `data` passed
  * pre-stringified) and return the new state, or null if no such record. At
  * least one field must be provided by the caller.

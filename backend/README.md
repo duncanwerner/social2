@@ -34,6 +34,7 @@ D1 for durable storage.
 | POST   | `/create-event` 🔒                | `{ data, channel, status? }` → new record (201); owner = session user |
 | GET    | `/get-event?id=<uuid>`            | Fetch one record (public; 404 if unknown). With the owner's bearer token, response adds `owner: true` |
 | POST   | `/update-event` 🔒                | `{ id, status?, data? }` → update (owner-only, 403 otherwise) + broadcast |
+| GET    | `/my-events?page=n&all=0\|1` 🔒   | Caller's own records, newest first, 12/page (`{ records, page, hasMore }`); active-only unless `all=1` |
 | GET    | `/healthz`                        | Liveness check                            |
 
 🔒 = requires `Authorization: Bearer <token>`. Channel names must match

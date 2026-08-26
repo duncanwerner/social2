@@ -14,6 +14,7 @@ import {
   insertRecord,
   insertSession,
   recentEvents,
+  recordsByOwner,
   updateRecord,
 } from "./db";
 import type {
@@ -100,6 +101,9 @@ export default {
       }
       if (pathname === "/get-event" && request.method === "GET") {
         return handleGetEvent(request, env, url);
+      }
+      if (pathname === "/my-events" && request.method === "GET") {
+        return handleMyEvents(request, env, url);
       }
       if (pathname === "/update-event" && request.method === "POST") {
         return handleUpdateEvent(request, env);
@@ -305,6 +309,41 @@ async function handleGetEvent(
   const user = await authenticate(request, env);
   const owner = !!user && user.id === record.ownerid;
   return json({ ...publicRecord(record), owner });
+}
+
+/** How many records one page of `/my-events` returns. */
+const MY_EVENTS_PAGE_SIZE = 12;
+
+/**
+ * GET /my-events?page=<n>&all=<0|1> — the authenticated user's own records,
+ * newest first, paginated. Defaults to active-only; `all=1` includes Finished
+ * records. `ownerid` is stripped from every row (via `publicRecord`).
+ */
+async function handleMyEvents(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  const user = await authenticate(request, env);
+  if (!user) return json({ error: "unauthorized" }, 401);
+
+  const requestedPage = Number(url.searchParams.get("page") ?? "1");
+  const page = Number.isFinite(requestedPage)
+    ? Math.max(1, Math.trunc(requestedPage))
+    : 1;
+  const allParam = url.searchParams.get("all");
+  const includeFinished = allParam === "1" || allParam === "true";
+
+  // Fetch one extra row to know whether a next page exists, without a COUNT.
+  const rows = await recordsByOwner(env, user.id, {
+    limit: MY_EVENTS_PAGE_SIZE + 1,
+    offset: (page - 1) * MY_EVENTS_PAGE_SIZE,
+    includeFinished,
+  });
+  const hasMore = rows.length > MY_EVENTS_PAGE_SIZE;
+  const records = rows.slice(0, MY_EVENTS_PAGE_SIZE).map(publicRecord);
+
+  return json({ records, page, hasMore });
 }
 
 /** POST /update-event — mutate a record's status/data, then broadcast it live. */

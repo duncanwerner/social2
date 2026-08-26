@@ -3,47 +3,51 @@ import { For, Show } from "@solidjs/web";
 import { useLocation, useNavigate, useParams } from "@solidjs/router";
 import { CreatePlayerID } from "../social";
 import type { SocialEvent } from "../types";
-import {
-  blankEvent,
-  loadEvent,
-  loadRecordRef,
-  newEventId,
-  saveEvent,
-  saveRecordRef,
-} from "../event-store";
 import { ApiError, createRecord, getRecord, updateRecord } from "../records";
 import { isAuthenticated } from "../auth";
 import { EventStatus, isFinished } from "../event-status";
+import { ErrorView } from "./ErrorView";
 
 const PLAYER_MIN = 0;
 const PLAYER_MAX = 40;
 const COURT_MIN = 1;
 const COURT_MAX = 20;
 
+/** A blank event for the create form: a realistic default roster to tweak. */
+function blankEvent(): SocialEvent {
+  return {
+    players: Array.from({ length: 8 }, (_, i) => ({
+      id: CreatePlayerID(i),
+      name: "",
+    })),
+    courts: Array.from({ length: 2 }, () => ({})),
+    metadata: { name: "", description: "", location: "", date: "", time: "" },
+  };
+}
+
 /**
  * Create or edit a social. Mode is driven by the route param: `/create-event`
- * has no id (create), `/update-event/:id` carries one (edit). Phone-first — the
- * player/court counts are set with a compact stepper, and naming is tucked into
- * an expandable section so the default view stays short.
+ * has no id (create mode — a blank form), `/update-event/:id` carries the
+ * **backend record id** (edit mode — the form is seeded from the fetched record).
+ *
+ * This outer component handles the auth guard and, in edit mode, the async load
+ * of the record; the form itself (`EventEditorForm`) mounts only once its seed
+ * data is ready, so its signals can be seeded synchronously as before.
  */
 export function EventEditor() {
   const params = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  // `params.id` is undefined on /create-event. Snapshotted at mount (untrack):
-  // it seeds `initial` and the form signals below, so the editor is bound to one
-  // event per mount. Every in-app path here is a fresh mount (create→update and
-  // view→edit are route changes; tabs keep the id), so the id never changes under
-  // us. NB: a direct /update-event/A → /update-event/B URL change would keep this
-  // mounted and go stale — the route keys EventEditor on the id to force a remount.
-  const editingId = untrack(() => params.id);
+  // Snapshotted at mount: the record id in edit mode, undefined in create mode.
+  // The /update-event/:id route keys EventEditor on the id, so this never changes
+  // under us — a different id forces a fresh mount.
+  const recordId = untrack(() => params.id);
 
   // Guard: bounce to /login (remembering where we were) when not signed in.
   createEffect(
     () => isAuthenticated(),
     (authed) => {
       if (authed) return;
-      // Point-in-time: capture the current path to return to after login.
       const from = untrack(() => location.pathname);
       // Defer the navigate: calling it inside the effect callback runs during the
       // in-progress flush (a no-op flush warning); a microtask redirects cleanly.
@@ -55,8 +59,88 @@ export function EventEditor() {
     },
   );
 
-  const initial: SocialEvent =
-    (editingId ? loadEvent(editingId) : null) ?? blankEvent();
+  // Create mode: seed synchronously from a blank event and render immediately.
+  if (!recordId) {
+    return (
+      <EventEditorForm initial={blankEvent()} recordId={undefined} channel={undefined} status={null} />
+    );
+  }
+
+  // Edit mode: fetch the record, then render the form seeded from it. `get-event`
+  // is public but returns `owner: true` only for our token — a non-owner is sent
+  // to the read-only view. (Not signed in → the guard above redirects to /login,
+  // so we don't start the load in that case.)
+  const [seed, setSeed] = createSignal<{
+    initial: SocialEvent;
+    channel: string;
+    status: number;
+  } | null>(null);
+  const [failed, setFailed] = createSignal(false);
+
+  if (untrack(isAuthenticated)) {
+    void (async () => {
+      try {
+        const record = await getRecord(recordId);
+        if (record.owner !== true) {
+          navigate(`/view/${recordId}`, { replace: true });
+          return;
+        }
+        setSeed({
+          initial: record.data as SocialEvent,
+          channel: record.channel,
+          status: record.status,
+        });
+      } catch {
+        setFailed(true);
+      }
+    })();
+  }
+
+  return (
+    <Show
+      when={!failed()}
+      fallback={
+        <ErrorView
+          title="Event not found"
+          message="This link doesn’t point to an event you own."
+        />
+      }
+    >
+      <Show when={seed()} fallback={<div class="view-loading">Loading…</div>}>
+        {(s) => (
+          <EventEditorForm
+            initial={s().initial}
+            recordId={recordId}
+            channel={s().channel}
+            status={s().status}
+          />
+        )}
+      </Show>
+    </Show>
+  );
+}
+
+interface EventEditorFormProps {
+  /** Seed data for the form (a blank event in create mode, the record's data in edit mode). */
+  initial: SocialEvent;
+  /** The backend record id in edit mode; undefined in create mode. */
+  recordId: string | undefined;
+  /** The record's channel in edit mode; undefined in create mode. */
+  channel: string | undefined;
+  /** The record's status in edit mode; null in create mode. */
+  status: number | null;
+}
+
+function EventEditorForm(props: EventEditorFormProps) {
+  const navigate = useNavigate();
+  // Read once at setup to seed the form; the form is remounted per record, so
+  // these props are stable for this instance. Untracked: props are reactive
+  // getters, and a bare read outside a tracking scope trips STRICT_READ_UNTRACKED.
+  const initial = untrack(() => props.initial);
+  const recordId = untrack(() => props.recordId);
+  const channel = untrack(() => props.channel);
+  const status = untrack(() => props.status);
+  const editing = recordId !== undefined;
 
   const [evName, setEvName] = createSignal(initial.metadata.name);
   const [evDate, setEvDate] = createSignal(initial.metadata.date);
@@ -77,23 +161,13 @@ export function EventEditor() {
     initial.players.map((p) => !!p.disabled),
   );
 
-  const [linkedRef, setLinkedRef] = createSignal(
-    editingId ? loadRecordRef(editingId) : null,
+  // The backend record this form is bound to (null until a create succeeds).
+  const [linkedRef, setLinkedRef] = createSignal<{ id: string; channel: string } | null>(
+    recordId ? { id: recordId, channel: channel! } : null,
   );
-  // Backend record status (drives the Finish/Reopen control); null until loaded.
-  const [recordStatus, setRecordStatus] = createSignal<number | null>(null);
+  // Backend record status (drives the Finish/Reopen control); null in create mode.
+  const [recordStatus, setRecordStatus] = createSignal<number | null>(status);
   const [finishing, setFinishing] = createSignal(false);
-
-  // Load the record's status for a synced event being edited.
-  void (async () => {
-    const ref = editingId ? loadRecordRef(editingId) : null;
-    if (!ref || !untrack(isAuthenticated)) return;
-    try {
-      setRecordStatus((await getRecord(ref.id)).status);
-    } catch {
-      /* offline or gone — leave null; the control stays disabled */
-    }
-  })();
 
   // Finish the event (status → Finished) so viewers go read-only and no new
   // sockets open; or reopen it (→ Active). The update broadcasts, so live viewers
@@ -150,7 +224,7 @@ export function EventEditor() {
       ? "Saving…"
       : saved()
         ? "Saved ✓"
-        : editingId
+        : editing
           ? "Save changes"
           : "Create social";
 
@@ -223,75 +297,47 @@ export function EventEditor() {
   });
 
   // Fetch the current record as the merge base — the live rounds page writes
-  // rounds/scores straight to it, so it can be newer than our localStorage copy;
-  // merging onto it keeps those from being clobbered. Falls back to local.
+  // rounds/scores straight to it, so it can be newer than the copy we seeded
+  // from; merging onto it keeps those from being clobbered. Falls back to `initial`.
   async function freshBase(refId: string): Promise<SocialEvent> {
     try {
       return (await getRecord(refId)).data as SocialEvent;
     } catch {
-      return initial; // record gone or offline — keep the local base
+      return initial; // record gone or offline — keep the seed base
     }
   }
 
-  // Explicit save: the "Create social" action for a not-yet-synced event. Creates
-  // the backend record (or updates it, if a ref already exists) and navigates to
-  // the update page, where edits auto-save from then on.
+  // Explicit save: the "Create social" action for a brand-new event. Mints a
+  // channel, creates the backend record, and navigates to the update page (keyed
+  // by the new record id), where edits auto-save from then on.
   async function save() {
-    const id = editingId ?? newEventId();
-    const existingRef = loadRecordRef(id);
-
-    const base = existingRef && isAuthenticated() ? await freshBase(existingRef.id) : initial;
-    const event = buildEvent(base);
-    saveEvent(id, event);
+    const event = buildEvent(initial);
     setSaved(true);
+    if (!isAuthenticated()) return; // guard will redirect; nothing to sync
 
-    if (isAuthenticated()) {
-      setSyncing(true);
-      setSync("Syncing…");
-
-      const create = async (channel: string, note: string) => {
-        const created = await createRecord({ data: event, channel });
-        const ref = { id: created.id, channel: created.channel };
-        saveRecordRef(id, ref);
-        setLinkedRef(ref);
-        setSync(`${note} ${created.id}`);
-      };
-
-      try {
-        if (existingRef) {
-          try {
-            const updated = await updateRecord({ id: existingRef.id, data: event });
-            setSync(`Updated record ${existingRef.id} (delivered ${updated.delivered})`);
-          } catch (err) {
-            if (err instanceof ApiError && err.status === 404) {
-              await create(existingRef.channel, "Re-created record (previous link was stale)");
-            } else {
-              throw err;
-            }
-          }
-        } else {
-          // The event's local id doubles as its channel on first create.
-          await create(id, "Created record");
-        }
-      } catch (err) {
-        const reason = err instanceof ApiError ? err.message : String(err);
-        setSync(`Saved locally, but backend sync failed — ${reason}`);
-      } finally {
-        setSyncing(false);
-      }
+    setSyncing(true);
+    setSync("Syncing…");
+    try {
+      // A fresh channel for the record's live socket (url/path-safe uuid).
+      const created = await createRecord({ data: event, channel: crypto.randomUUID() });
+      setLinkedRef({ id: created.id, channel: created.channel });
+      setRecordStatus(created.status);
+      navigate(`/update-event/${created.id}`);
+    } catch (err) {
+      const reason = err instanceof ApiError ? err.message : String(err);
+      setSync(`Could not create — ${reason}`);
+    } finally {
+      setSyncing(false);
     }
-
-    if (!editingId) navigate(`/update-event/${id}`);
   }
 
   // Auto-save: once the event has a backend record, persist edits to it directly
   // (no button). Debounced so a burst of edits becomes one write + one broadcast.
   async function persist(ref: { id: string; channel: string }) {
-    if (!editingId || !isAuthenticated()) return;
+    if (!editing || !isAuthenticated()) return;
     setSyncing(true);
     try {
       const event = buildEvent(await freshBase(ref.id));
-      saveEvent(editingId, event);
       await updateRecord({ id: ref.id, data: event });
       setSaved(true);
       setSync("");
@@ -365,7 +411,7 @@ export function EventEditor() {
             </button>
           </Show>
         </div>
-        <h1>{editingId ? "Edit social" : "New social"}</h1>
+        <h1>{editing ? "Edit social" : "New social"}</h1>
       </header>
 
       <section class="card">

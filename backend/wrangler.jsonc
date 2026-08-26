@@ -18,8 +18,7 @@
     {
       "binding": "DB",
       "database_name": "do-sockets",
-      // Run `npx wrangler d1 create do-sockets` and paste the returned id here.
-      "database_id": "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+      "database_id": "2cafd4c1-801c-4a7a-b4ff-ea77a0135fc2"
     }
   ]
 }

@@ -44,6 +44,14 @@ export interface UpdateRecordResponse extends RecordEntity {
   delivered: number;
 }
 
+/** One page of the caller's own records from GET /my-events (newest first). */
+export interface MyEventsResponse {
+  records: RecordEntity[];
+  page: number;
+  /** Whether a further page exists after this one. */
+  hasMore: boolean;
+}
+
 /** The frame broadcast to a record's channel when it changes. */
 export interface RecordUpdate {
   kind: "record.updated";

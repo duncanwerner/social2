@@ -29,6 +29,13 @@ export function AppNav() {
             </button>
           }
         >
+          <button
+            class="link"
+            type="button"
+            onClick={() => navigate("/my-events")}
+          >
+            My events
+          </button>
           <span class="nav-user">{user()?.username}</span>
           <button class="link" type="button" onClick={doLogout}>
             Sign out

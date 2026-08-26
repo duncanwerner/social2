@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE INDEX IF NOT EXISTS idx_records_channel ON records (channel);
 
+-- Owner-scoped, newest-first listing (GET /my-events).
+CREATE INDEX IF NOT EXISTS idx_records_owner ON records (ownerid, created_at);
+
 -- Users: manually seeded (no signup). `password` is an encoded PBKDF2 string:
 -- pbkdf2$sha256$<iterations>$<salt_b64>$<hash_b64>.
 CREATE TABLE IF NOT EXISTS users (

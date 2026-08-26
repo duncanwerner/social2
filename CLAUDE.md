@@ -34,8 +34,10 @@ low (dozens of clients, tens of events/hour).
   a `{ kind: "record.updated", record }` frame (reusing `stub.broadcast`).
 - **Endpoints:** `GET /connect?channel=X` (WS upgrade), `POST /publish`,
   `GET /history?channel=X&limit=n`, `POST /create-event`, `GET /get-event?id=X`,
-  `POST /update-event`, `GET /healthz`. Channel names must match
-  `^[A-Za-z0-9._:-]{1,128}$`. HTTP endpoints send permissive CORS.
+  `POST /update-event`, `GET /my-events?page=n&all=0|1` (owner's own records,
+  newest first, 12/page, auth-gated, active-only unless `all=1`), `GET /healthz`.
+  Channel names must match `^[A-Za-z0-9._:-]{1,128}$`. HTTP endpoints send
+  permissive CORS.
 - **Auth:** password login + long-lived bearer session tokens (`POST /login`,
   `/logout`, `GET /me`). Users are seeded manually — no signup
   (`npm run create-user -- <name>`). Passwords: PBKDF2-HMAC-SHA256 in
@@ -55,26 +57,36 @@ Key files: `backend/src/index.ts` (routing), `backend/src/channel-hub.ts` (DO),
 Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
 
 - **Owner flow.** `/login` → guard; `/create-event` and `/update-event/:id`
-  (`components/EventEditor.tsx`) are the setup surface (roster/courts/metadata),
-  saved locally (`event-store.ts`) and pushed to the backend as a record.
-  `EventEditor` snapshots the route id at mount to seed its form signals, so the
-  `/update-event/:id` route wraps it in `<Show keyed when={params.id}>` to force a
-  fresh mount if the id changes (the router would otherwise reuse the instance). The
-  update page has: a shareable `/view/{recordId}` player link + a "View as player"
-  link, per-player **Sit** checkboxes (temporarily bench a player — see optimizer
-  note), a free-text event **time** (opaque, so ranges like "11:00 – 1:00" work),
-  and a **Finish / Reopen** control that flips the record's status.
-- **Saving.** A brand-new event stays local until the explicit **Create social**
-  press (which creates the backend record); from then on the editor **auto-saves**
-  edits on a ~1s debounce (a `createEffect` over a serialized snapshot of the form
-  → `persist()`), flushing any pending save in `onCleanup` if you navigate away.
-  No Save button once the record exists — just an "All changes saved" status.
+  (`components/EventEditor.tsx`) are the setup surface (roster/courts/metadata).
+  (`/login` shows a "Local backend" note when `BACKEND_URL` is localhost/loopback —
+  a dev aid so it's obvious you're not signing in against the deployed Worker.)
+  The editor is keyed by the **backend record id** (no local-storage layer): create
+  mode seeds a blank form; edit mode's outer `EventEditor` fetches `get-event`
+  (owner-only, else it bounces to the read-only view) and mounts the inner
+  `EventEditorForm` seeded from `record.data`. The `/update-event/:id` route wraps
+  it in `<Show keyed when={params.id}>` to force a fresh mount when the id changes
+  (the router would otherwise reuse the instance). The update page has: a shareable
+  `/view/{recordId}` player link + a "View as player" link, per-player **Sit**
+  checkboxes (temporarily bench a player — see optimizer note), a free-text event
+  **time** (opaque, so ranges like "11:00 – 1:00" work), and a **Finish / Reopen**
+  control that flips the record's status.
+- **My events.** `/my-events` (`routes/my-events.tsx`) lists the signed-in owner's
+  records via `GET /my-events` (`listMyEvents` in `records.ts`), newest first,
+  12/page, with a "Show finished" filter persisted in `localStorage`
+  (`rotation:my-events-all`). Auth-guarded like the editor; header link in `AppNav`.
+  Each row opens `/update-event/<recordId>`.
+- **Saving.** A brand-new event lives only in the form until the explicit **Create
+  social** press (which mints a channel, creates the backend record, and navigates
+  to `/update-event/<recordId>`); from then on the editor **auto-saves** edits on a
+  ~1s debounce (a `createEffect` over a serialized snapshot of the form →
+  `persist()`), flushing any pending save in `onCleanup` if you navigate away. No
+  Save button once the record exists — just an "All changes saved" status.
 - **Saves are backend-authoritative for untouched fields.** Rounds/scores are
-  written by the live rounds page straight to the record, so localStorage goes
-  stale. Both the explicit `save()` and the auto-save `persist()` build the payload
-  via `buildEvent(base)` where `base` is the **freshly-fetched record** (not stale
-  `initial`), or the save would wipe the rounds. Any field the form doesn't render
-  must be preserved this way.
+  written by the live rounds page straight to the record, so the form's seed data
+  goes stale. Both the explicit `save()` and the auto-save `persist()` build the
+  payload via `buildEvent(base)` where `base` is the **freshly-fetched record**
+  (not the stale mount-time `initial`), or the save would wipe the rounds. Any
+  field the form doesn't render must be preserved this way.
 - **Player flow.** `/view/:id` is a **layout** (`routes/view/[id].tsx`) that loads
   the record (public `get-event`) and — unless the event is finished — subscribes
   to its channel (`socket.ts`, auto-reconnect) in a `createEffect` **keyed on the
