@@ -122,13 +122,15 @@ export default function ViewStats() {
                   <tr class={r.rank === 1 ? "leader" : undefined}>
                     <td class="col-rank">{r.rank}</td>
                     <td class="col-name">
-                      {r.name}
-                      <Show when={r.rank === 1}>
-                        <span class="crown" title="Leader" aria-label="Leader">
-                          {" "}
-                          👑
-                        </span>
-                      </Show>
+                      <div class="vertical-center-patch">
+                        {r.name}
+                        <Show when={r.rank === 1}>
+                          <span class="crown" title="Leader" aria-label="Leader">
+                            {" "}
+                            👑
+                          </span>
+                        </Show>
+                      </div>
                     </td>
                     <For each={columns()}>
                       {(c) => (

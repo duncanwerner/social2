@@ -448,6 +448,12 @@ button.secondary:disabled {
   max-width: 0;
   width: 100%;
 }
+
+.standings .vertical-center-patch {
+  display: flex;
+  gap: .5em;
+}
+
 .standings .col-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
