@@ -1,12 +1,19 @@
 // Seed a user into the D1 `users` table. No signup endpoint exists by design;
-// this is the manual way to create the first accounts.
+// this is the manual way to create accounts.
 //
-//   node scripts/create-user.mjs <username> [--remote]
+//   node scripts/create-user.mjs <username> [--remote] [--hostname <host>]
 //
-// Generates a random password, hashes it with the SAME PBKDF2 params as
-// backend/src/auth.ts, inserts the row via `wrangler d1 execute`, and prints the
-// password ONCE. (Compatibility with auth.ts is confirmed by logging in.)
+// The user is created WITHOUT a usable password: a random, never-disclosed
+// password satisfies the NOT NULL column, and the only way in is the recovery
+// token this prints. Email the user the token/link and they set their own
+// password via the frontend's /set-password page. With --hostname, a full
+// clickable URL is printed; otherwise just the raw token.
 
+import {
+  mintRecoveryToken,
+  parseArgs,
+  printRecovery,
+} from "./recovery.mjs";
 import { execFileSync } from "node:child_process";
 
 // Keep these in sync with backend/src/auth.ts.
@@ -14,13 +21,12 @@ const PBKDF2_ITERATIONS = 210_000;
 const PBKDF2_SALT_BYTES = 16;
 const PBKDF2_KEY_BITS = 256;
 
-const args = process.argv.slice(2);
-const remote = args.includes("--remote");
-const username = args.find((a) => !a.startsWith("--"));
+const { remote, hostname, positional } = parseArgs(process.argv.slice(2));
+const username = positional[0];
 
 if (!username || !/^[A-Za-z0-9._-]{1,64}$/.test(username)) {
   console.error(
-    "Usage: node scripts/create-user.mjs <username> [--remote]\n" +
+    "Usage: node scripts/create-user.mjs <username> [--remote] [--hostname <host>]\n" +
       "  username must match [A-Za-z0-9._-]{1,64}",
   );
   process.exit(1);
@@ -45,8 +51,9 @@ async function hashPassword(password) {
   return `pbkdf2$sha256$${PBKDF2_ITERATIONS}$${b64(salt)}$${b64(new Uint8Array(bits))}`;
 }
 
-// A readable-ish strong random password (base64url of 15 bytes → 20 chars).
-function generatePassword() {
+// A random, never-shared password keeps `password NOT NULL` satisfied; the user
+// can never know it, so the recovery token below is the only way to sign in.
+function randomSecret() {
   return b64(crypto.getRandomValues(new Uint8Array(15)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -54,8 +61,7 @@ function generatePassword() {
 }
 
 const id = crypto.randomUUID();
-const password = generatePassword();
-const hash = await hashPassword(password);
+const hash = await hashPassword(randomSecret());
 
 // hash and id contain only [A-Za-z0-9$+/=-]; username is validated above — none
 // contain a single quote, so single-quoted SQL literals are safe here.
@@ -80,8 +86,9 @@ try {
   process.exit(1);
 }
 
+const token = await mintRecoveryToken({ userId: id, remote });
+
 console.log(`\nCreated user (${remote ? "remote" : "local"}):`);
 console.log(`  username: ${username}`);
 console.log(`  id:       ${id}`);
-console.log(`  password: ${password}`);
-console.log("\nSave the password now — it is not stored anywhere else.");
+printRecovery({ token, hostname });

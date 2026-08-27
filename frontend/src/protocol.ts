@@ -52,6 +52,18 @@ export interface MyEventsResponse {
   hasMore: boolean;
 }
 
+/** GET /recovery — a valid recovery token, with the target user's name. */
+export interface RecoveryCheckResponse {
+  valid: true;
+  username: string;
+}
+
+/** POST /set-password — a fresh session (auto sign-in), mirroring /login. */
+export interface SetPasswordResponse {
+  token: string;
+  user: { id: string; username: string };
+}
+
 /** The frame broadcast to a record's channel when it changes. */
 export interface RecordUpdate {
   kind: "record.updated";

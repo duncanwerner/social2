@@ -35,7 +35,9 @@ low (dozens of clients, tens of events/hour).
 - **Endpoints:** `GET /connect?channel=X` (WS upgrade), `POST /publish`,
   `GET /history?channel=X&limit=n`, `POST /create-event`, `GET /get-event?id=X`,
   `POST /update-event`, `GET /my-events?page=n&all=0|1` (owner's own records,
-  newest first, 12/page, auth-gated, active-only unless `all=1`), `GET /healthz`.
+  newest first, 12/page, auth-gated, active-only unless `all=1`),
+  `GET /recovery?token=X` + `POST /set-password` (recovery flow, both public — see
+  Auth), `GET /healthz`.
   Channel names must match `^[A-Za-z0-9._:-]{1,128}$`. HTTP endpoints send
   permissive CORS.
 - **Auth:** password login + long-lived bearer session tokens (`POST /login`,
@@ -47,6 +49,18 @@ low (dozens of clients, tens of events/hour).
   `get-event` and `/connect` are public (viewers need no account; browsers can't
   set headers on a WS upgrade, so gating `/connect` later means a `?token=` param).
   Frontend keeps the token in `localStorage` and sends `Authorization: Bearer`.
+- **Password recovery (no email).** The "forgot password" flow, minus any mail
+  server: an admin mints a **recovery token** for a user and emails them a
+  `/set-password?token=X` link. `create-user` no longer prints a password — it
+  creates the user with a random, never-disclosed one (so `password` stays
+  `NOT NULL`, `/login` untouched) and prints a recovery link; `npm run
+  reset-password -- <name>` mints one for an existing user. Both take `--hostname`
+  to print a full URL (raw token otherwise) and live in `backend/scripts/`
+  (`recovery.mjs` shared helper). Tokens are single-use, 7-day TTL, stored as a
+  SHA-256 hash in the `recovery_tokens` table (mirrors `sessions`). `GET /recovery`
+  validates a token (returns the username for the form); `POST /set-password
+  {token, password}` (min 8 chars) sets the password, consumes the token, and
+  issues a session for auto sign-in. Both public — the token is the credential.
 
 Key files: `backend/src/index.ts` (routing), `backend/src/channel-hub.ts` (DO),
 `backend/src/db.ts` (D1), `backend/src/auth.ts` (PBKDF2 + tokens),
@@ -70,6 +84,11 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
   checkboxes (temporarily bench a player — see optimizer note), a free-text event
   **time** (opaque, so ranges like "11:00 – 1:00" work), and a **Finish / Reopen**
   control that flips the record's status.
+- **Set password.** `/set-password?token=X` (`routes/set-password.tsx`, public, no
+  guard) is the recovery-link landing page: it validates the token via
+  `GET /recovery` (`recovery.ts`) and shows the target username or an
+  invalid/expired message, takes a new password + confirm, then `POST /set-password`
+  and auto signs-in (`adoptSession` in `auth.ts`) → `/`. Mirrors the `/login` form.
 - **My events.** `/my-events` (`routes/my-events.tsx`) lists the signed-in owner's
   records via `GET /my-events` (`listMyEvents` in `records.ts`), newest first,
   12/page, with a "Show finished" filter persisted in `localStorage`
@@ -118,7 +137,7 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
 # Backend — local Miniflare on :8787
 cd backend && npm install
 npm run db:init                 # apply D1 schema to local storage (one-time)
-npm run create-user -- <name>   # seed a login (prints a random password once)
+npm run create-user -- <name>   # seed a login (prints a recovery link, not a password)
 npm run dev
 
 # Frontend — Vite on :5174

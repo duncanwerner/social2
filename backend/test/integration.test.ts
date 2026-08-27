@@ -1,6 +1,11 @@
 import { env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { constantTimeEqual, hashPassword, verifyPassword } from "../src/auth";
+import {
+  constantTimeEqual,
+  hashPassword,
+  hashToken,
+  verifyPassword,
+} from "../src/auth";
 
 // Apply the D1 schema to the test's isolated storage. Each statement must be a
 // single line for env.DB.exec (which splits its input on newlines).
@@ -36,6 +41,14 @@ const SCHEMA = [
      expires_at TEXT NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id)`,
+  `CREATE TABLE IF NOT EXISTS recovery_tokens (
+     token_hash TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+     expires_at TEXT NOT NULL,
+     used_at TEXT
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_tokens (user_id)`,
 ];
 
 // Two seeded users for the auth + records tests.
@@ -445,6 +458,106 @@ describe("GET /my-events", () => {
     expect(all.records[0].id).toBe("l-f-2");
     expect(all.records[1].id).toBe("l-f-1");
     expect(all.hasMore).toBe(true);
+  });
+});
+
+describe("recovery / set-password", () => {
+  // A dedicated user so setting its password doesn't disturb OWNER/OTHER, whose
+  // passwords other suites log in with.
+  const RUSER = {
+    id: "user-recover",
+    username: "recoverme",
+    password: "initial-pw-1",
+  };
+
+  function setPassword(body: unknown) {
+    return SELF.fetch("https://example.com/set-password", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function seedToken(
+    rawToken: string,
+    opts: { expired?: boolean } = {},
+  ) {
+    await env.DB.prepare(
+      `INSERT INTO recovery_tokens (token_hash, user_id, expires_at)
+       VALUES (?, ?, datetime('now', ?))`,
+    )
+      .bind(await hashToken(rawToken), RUSER.id, opts.expired ? "-1 days" : "+7 days")
+      .run();
+  }
+
+  beforeAll(async () => {
+    await seedUser(RUSER);
+  });
+
+  it("GET /recovery validates a good token and rejects a bad one", async () => {
+    await seedToken("good-token-1");
+    const ok = await SELF.fetch("https://example.com/recovery?token=good-token-1");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ valid: true, username: RUSER.username });
+
+    const bad = await SELF.fetch("https://example.com/recovery?token=nope");
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: "invalid_token" });
+  });
+
+  it("rejects a password shorter than the minimum", async () => {
+    await seedToken("weak-pw-token");
+    const res = await setPassword({ token: "weak-pw-token", password: "short" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "weak_password" });
+  });
+
+  it("sets the password, signs in, and consumes the token (single-use)", async () => {
+    await seedToken("set-token-1");
+    const res = await setPassword({
+      token: "set-token-1",
+      password: "brand-new-pw",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      token: string;
+      user: { id: string; username: string };
+    };
+    expect(body.user).toEqual({ id: RUSER.id, username: RUSER.username });
+    expect(body.token).toBeTruthy();
+
+    // The returned session works.
+    const me = await SELF.fetch("https://example.com/me", {
+      headers: { Authorization: `Bearer ${body.token}` },
+    });
+    expect(me.status).toBe(200);
+
+    // The new password logs in; the old (seeded) one no longer does.
+    expect((await login(RUSER.username, "brand-new-pw")).status).toBe(200);
+    expect((await login(RUSER.username, RUSER.password)).status).toBe(401);
+
+    // The token can't be reused, and no longer validates.
+    const reuse = await setPassword({
+      token: "set-token-1",
+      password: "another-pw-9",
+    });
+    expect(reuse.status).toBe(400);
+    expect(await reuse.json()).toEqual({ error: "invalid_token" });
+    expect(
+      (await SELF.fetch("https://example.com/recovery?token=set-token-1")).status,
+    ).toBe(400);
+  });
+
+  it("rejects an expired token", async () => {
+    await seedToken("expired-token", { expired: true });
+    expect(
+      (await SELF.fetch("https://example.com/recovery?token=expired-token")).status,
+    ).toBe(400);
+    const res = await setPassword({
+      token: "expired-token",
+      password: "valid-enough-pw",
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_token" });
   });
 });
 

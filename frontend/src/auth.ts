@@ -48,6 +48,14 @@ function persist(t: string, u: AuthUser): void {
   }
 }
 
+/**
+ * Adopt a session returned by the backend (e.g. the auto sign-in from
+ * /set-password) as the current auth state, persisting it like `login` does.
+ */
+export function adoptSession(t: string, u: AuthUser): void {
+  persist(t, u);
+}
+
 /** Clear local auth state (does not call the backend). */
 export function clearAuth(): void {
   setToken(null);

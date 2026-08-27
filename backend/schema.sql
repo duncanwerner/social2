@@ -48,3 +48,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+
+-- Recovery tokens: single-use, time-limited tokens that let a user set their
+-- password (initial setup or reset) without email. Minted out-of-band by the
+-- create-user / reset-password scripts and emailed as a link. Like sessions, we
+-- store only the SHA-256 of the token, so a database leak can't yield usable ones.
+CREATE TABLE IF NOT EXISTS recovery_tokens (
+  token_hash TEXT PRIMARY KEY,          -- sha-256(token), hex
+  user_id    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  used_at    TEXT                       -- NULL until consumed (single-use)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_tokens (user_id);

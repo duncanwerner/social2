@@ -257,6 +257,73 @@ export async function deleteSession(
     .run();
 }
 
+/** Update a user's encoded password hash. */
+export async function updateUserPassword(
+  env: Env,
+  input: { id: string; password: string },
+): Promise<void> {
+  await env.DB.prepare(`UPDATE users SET password = ? WHERE id = ?`)
+    .bind(input.password, input.id)
+    .run();
+}
+
+// --- recovery tokens -------------------------------------------------------
+
+/** How long a recovery token stays valid after it's minted. */
+export const RECOVERY_TTL_DAYS = 7;
+
+/**
+ * Mint a recovery token for a user (stores only its hash). Any earlier unused
+ * tokens for the same user should be cleared first via
+ * `deleteRecoveryTokensForUser` so only the latest link works.
+ */
+export async function insertRecoveryToken(
+  env: Env,
+  input: { token_hash: string; user_id: string },
+): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO recovery_tokens (token_hash, user_id, expires_at)
+     VALUES (?, ?, datetime('now', ?))`,
+  )
+    .bind(input.token_hash, input.user_id, `+${RECOVERY_TTL_DAYS} days`)
+    .run();
+}
+
+/** Look up a valid (unused, unexpired) recovery token by its hash. */
+export async function getValidRecoveryToken(
+  env: Env,
+  token_hash: string,
+): Promise<{ user_id: string } | null> {
+  return env.DB.prepare(
+    `SELECT user_id FROM recovery_tokens
+     WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`,
+  )
+    .bind(token_hash)
+    .first<{ user_id: string }>();
+}
+
+/** Mark a recovery token consumed so it can't be reused. */
+export async function markRecoveryTokenUsed(
+  env: Env,
+  token_hash: string,
+): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE recovery_tokens SET used_at = datetime('now') WHERE token_hash = ?`,
+  )
+    .bind(token_hash)
+    .run();
+}
+
+/** Invalidate a user's outstanding recovery tokens (e.g. before minting a new one). */
+export async function deleteRecoveryTokensForUser(
+  env: Env,
+  user_id: string,
+): Promise<void> {
+  await env.DB.prepare(`DELETE FROM recovery_tokens WHERE user_id = ?`)
+    .bind(user_id)
+    .run();
+}
+
 function safeParse(s: string): unknown {
   try {
     return JSON.parse(s);

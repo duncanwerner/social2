@@ -1,5 +1,6 @@
 import {
   generateToken,
+  hashPassword,
   hashToken,
   verifyPassword,
 } from "./auth";
@@ -10,12 +11,15 @@ import {
   getSession,
   getUserById,
   getUserByUsername,
+  getValidRecoveryToken,
   insertEvent,
   insertRecord,
   insertSession,
+  markRecoveryTokenUsed,
   recentEvents,
   recordsByOwner,
   updateRecord,
+  updateUserPassword,
 } from "./db";
 import type {
   CreateEventRequest,
@@ -24,6 +28,7 @@ import type {
   PublicRecord,
   PublishRequest,
   RecordEntity,
+  SetPasswordRequest,
   UpdateEventRequest,
   User,
 } from "./types";
@@ -32,6 +37,9 @@ import type {
 // login still runs PBKDF2 and timing doesn't reveal whether an account exists.
 // (The password can never match; base64 parts are valid so verification runs.)
 const DUMMY_HASH = "pbkdf2$sha256$210000$c2FsdA==$aGFzaA==";
+
+/** Minimum length for a password set via the recovery flow. */
+const MIN_PASSWORD_LENGTH = 8;
 
 // The Durable Object class must be exported from the Worker entry point.
 export { ChannelHub };
@@ -86,6 +94,12 @@ export default {
       }
       if (pathname === "/me" && request.method === "GET") {
         return handleMe(request, env);
+      }
+      if (pathname === "/recovery" && request.method === "GET") {
+        return handleRecovery(env, url);
+      }
+      if (pathname === "/set-password" && request.method === "POST") {
+        return handleSetPassword(request, env);
       }
       if (pathname === "/connect") {
         return handleConnect(request, env, url);
@@ -157,6 +171,69 @@ async function handleMe(request: Request, env: Env): Promise<Response> {
   const user = await authenticate(request, env);
   if (!user) return json({ error: "unauthorized" }, 401);
   return json({ user: { id: user.id, username: user.username } });
+}
+
+/**
+ * GET /recovery?token=<t> — validate a recovery token before showing the
+ * set-password form. Public. On success returns `{ valid: true, username }`; any
+ * missing/used/expired token is a flat `invalid_token` (400) so a bad link can't
+ * probe which tokens exist.
+ */
+async function handleRecovery(env: Env, url: URL): Promise<Response> {
+  const token = url.searchParams.get("token");
+  if (!token) return json({ error: "invalid_token" }, 400);
+
+  const row = await getValidRecoveryToken(env, await hashToken(token));
+  if (!row) return json({ error: "invalid_token" }, 400);
+
+  const user = await getUserById(env, row.user_id);
+  if (!user) return json({ error: "invalid_token" }, 400);
+
+  return json({ valid: true, username: user.username });
+}
+
+/**
+ * POST /set-password {token, password} — set a user's password using a recovery
+ * token, then sign them in. Public. The token is single-use; on success it's
+ * marked consumed and a fresh session is issued (mirrors /login's response).
+ */
+async function handleSetPassword(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  let body: SetPasswordRequest;
+  try {
+    body = (await request.json()) as SetPasswordRequest;
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+  if (typeof body?.token !== "string" || typeof body?.password !== "string") {
+    return json({ error: "invalid_token" }, 400);
+  }
+  if (body.password.length < MIN_PASSWORD_LENGTH) {
+    return json({ error: "weak_password" }, 400);
+  }
+
+  const token_hash = await hashToken(body.token);
+  const row = await getValidRecoveryToken(env, token_hash);
+  if (!row) return json({ error: "invalid_token" }, 400);
+
+  const user = await getUserById(env, row.user_id);
+  if (!user) return json({ error: "invalid_token" }, 400);
+
+  await updateUserPassword(env, {
+    id: user.id,
+    password: await hashPassword(body.password),
+  });
+  await markRecoveryTokenUsed(env, token_hash);
+
+  // Auto sign-in: issue a session just like /login.
+  const token = generateToken();
+  await insertSession(env, {
+    token_hash: await hashToken(token),
+    user_id: user.id,
+  });
+  return json({ token, user: { id: user.id, username: user.username } });
 }
 
 /** GET /connect?channel=<name> — upgrade to a WebSocket on the channel's DO. */

@@ -86,3 +86,18 @@ export interface LoginRequest {
   username: string;
   password: string;
 }
+
+/** Body of a POST /set-password request (recovery-token password set/reset). */
+export interface SetPasswordRequest {
+  token: string;
+  password: string;
+}
+
+/** A recovery_tokens row. `used_at` is null until the token is consumed. */
+export interface RecoveryToken {
+  token_hash: string;
+  user_id: string;
+  created_at: string;
+  expires_at: string;
+  used_at: string | null;
+}
