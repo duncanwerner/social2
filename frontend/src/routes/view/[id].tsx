@@ -188,7 +188,7 @@ export default function ViewLayout(props: RouteSectionProps) {
                 class={isActive("/stats") ? "tab active" : "tab"}
                 onClick={() => navigate(base() + "/stats")}
               >
-                <span class="tab-icon" aria-hidden="true">👑</span>
+                <span class="tab-icon" aria-hidden="true">🏆</span>
                 <span class="tab-label">Stats</span>
               </button>
             </nav>

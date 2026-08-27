@@ -44,6 +44,11 @@ export default function ViewStats() {
   // Any scores entered yet? (Otherwise everyone is on zero — show a hint.)
   const hasResults = () => table().some((r) => r.played > 0);
 
+  // Medal for the podium places; nothing below 3rd. Ties share a rank
+  // (competition ranking), so joint-firsts both get gold.
+  const medal = (rank: number): string | undefined =>
+    rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : undefined;
+
   const fmtDiff = (n: number) => (n > 0 ? `+${n}` : String(n));
   // Game win rate: games won / total games played (— when nothing played yet).
   const winPct = (r: RankedStanding) => {
@@ -124,11 +129,12 @@ export default function ViewStats() {
                     <td class="col-name">
                       <div class="vertical-center-patch">
                         {r.name}
-                        <Show when={r.rank === 1}>
-                          <span class="crown" title="Leader" aria-label="Leader">
-                            {" "}
-                            👑
-                          </span>
+                        <Show when={medal(r.rank)}>
+                          {(m) => (
+                            <span class="medal" aria-label={`Rank ${r.rank}`}>
+                              {m()}
+                            </span>
+                          )}
                         </Show>
                       </div>
                     </td>

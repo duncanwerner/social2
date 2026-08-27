@@ -451,7 +451,7 @@ button.secondary:disabled {
 
 .standings .vertical-center-patch {
   display: flex;
-  gap: .5em;
+  gap: .25em;
 }
 
 .standings .col-num {
@@ -467,7 +467,7 @@ button.secondary:disabled {
   font-weight: 700;
   color: var(--text);
 }
-.standings .crown {
+.standings .medal {
   font-size: 13px;
 }
 .standings-note {
