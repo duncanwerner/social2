@@ -102,6 +102,17 @@ textarea:focus {
 textarea {
   resize: vertical;
 }
+/* Safari gives native date inputs an intrinsic min-width and ignores
+   width:100%, so they overflow their flex column. Let them shrink. */
+input[type="date"] {
+  min-width: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+input[type="date"]::-webkit-date-and-time-value {
+  text-align: left;
+  margin: 0;
+}
 
 button {
   cursor: pointer;
