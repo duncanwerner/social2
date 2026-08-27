@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:prod": "VITE_BACKEND_URL=https://do-sockets-backend.trebdev.workers.dev npm run build",
+    "deploy": "npx wrangler pages deploy dist",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
