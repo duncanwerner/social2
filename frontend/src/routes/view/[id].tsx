@@ -124,6 +124,19 @@ export default function ViewLayout(props: RouteSectionProps) {
     },
   );
 
+  // Reflect the event name in the page/tab title while viewing it, e.g.
+  // "Rotation: Friday AM". Restores the default "Rotation" on unmount (the
+  // returned cleanup runs on dispose and before each re-run).
+  createEffect(
+    () => event()?.metadata.name?.trim() ?? "",
+    (name) => {
+      document.title = name ? `Rotation: ${name}` : "Rotation";
+      return () => {
+        document.title = "Rotation";
+      };
+    },
+  );
+
   // Owner-only: optimistically update, then persist (which broadcasts to all
   // viewers). The broadcast echo re-applies the same value (idempotent).
   async function save(next: SocialEvent) {
