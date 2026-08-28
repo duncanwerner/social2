@@ -372,7 +372,14 @@ export default function ViewRounds() {
                       draftVal(i(), 0) === "" ||
                       draftVal(i(), 1) === ""
                     }
-                    onClick={() => submitOne(i())}
+                    onClick={(e) => {
+                      // iOS Safari freezes scrolling in the overflow container
+                      // when the just-tapped button becomes disabled while it
+                      // still holds focus — it unsticks only when the button
+                      // re-enables. Drop focus before the submit disables it.
+                      e.currentTarget.blur();
+                      void submitOne(i());
+                    }}
                   >
                     {submitting() === i()
                       ? "Submitting…"
