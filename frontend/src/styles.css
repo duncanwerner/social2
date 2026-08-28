@@ -37,6 +37,21 @@ body {
   flex-direction: column;
 }
 
+/* On the player view route only, make the shell exactly the (dynamic) viewport
+   height and stop the document scrolling. This lets the view give itself an
+   internal scroll region with a normal-flow bottom tab bar — instead of a
+   position:fixed one, which iOS Safari mis-hit-tests after the on-screen
+   keyboard closes (tap target frozen above the bar). A normal-flow footer can't
+   desync, so it needs no event listeners. Other routes keep document scroll. */
+.app:has(> .view) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.app:has(> .view) .app-nav {
+  flex-shrink: 0;
+}
+
 /* --- Landing --- */
 
 .landing {
@@ -209,11 +224,14 @@ button.link:disabled {
 }
 .view-body {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .view-page {
   max-width: 560px;
   margin: 0 auto;
-  padding: 16px 16px 88px; /* room for the fixed tab bar */
+  padding: 16px 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -225,6 +243,7 @@ button.link:disabled {
 }
 
 .view-status {
+  flex-shrink: 0;
   max-width: 560px;
   width: 100%;
   margin: 0 auto;
@@ -501,14 +520,10 @@ button.secondary:disabled {
 }
 
 .tab-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  flex-shrink: 0;
   display: flex;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  background: var(--bg);
   border-top: 1px solid var(--border);
-  backdrop-filter: blur(6px);
   padding-bottom: env(safe-area-inset-bottom);
 }
 .tab {
