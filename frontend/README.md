@@ -46,6 +46,19 @@ Static SPA, no SSR / no Pages Functions.
 - `public/_redirects` (`/* /index.html 200`) provides the SPA fallback so deep-link
   refreshes reach the client router instead of 404ing.
 
+> **Advisory — verifying a deploy on the right URL.** `wrangler pages deploy`
+> reads the *current git branch* to decide production vs preview. Deploying from
+> any branch other than the project's production branch (`main`) publishes a
+> **preview** deployment at its own hashed URL and leaves the production
+> `*.pages.dev` domain on the previous build. So when validating a change on the
+> live site, confirm you're loading the **URL wrangler just printed** (the
+> deployment/preview URL), not the base production URL — otherwise you're testing
+> stale code and will wrongly suspect caching. To actually update production,
+> deploy from `main` (or pass `--branch main`). CSS/JS are content-hashed, so a
+> real production deploy always serves new filenames; if the served
+> `<link rel="stylesheet">` hash hasn't changed, the deploy didn't land where you
+> looked.
+
 ## Solid 2 RC notes
 
 Same bleeding-edge caveats as `test-client` (see root `CLAUDE.md`): import `render`
