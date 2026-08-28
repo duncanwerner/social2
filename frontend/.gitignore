@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.log
 .vite/
+.dev.vars
+.wrangler/

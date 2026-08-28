@@ -38,13 +38,41 @@ env var (e.g. in `.env` or the Pages build environment).
 
 ## Deploy (Cloudflare Pages)
 
-Static SPA, no SSR / no Pages Functions.
+Static SPA (no app SSR), plus one small edge function for link previews.
 
 - Build command: `npm run build`
 - Output directory: `dist`
 - Root directory: `frontend`
 - `public/_redirects` (`/* /index.html 200`) provides the SPA fallback so deep-link
   refreshes reach the client router instead of 404ing.
+
+### Link-preview meta (`functions/view/[id].ts`)
+
+Crawlers that build link previews (iMessage, Slack, Facebook, X, …) don't run JS,
+so the SPA can't give them per-event Open Graph tags. This **Pages Function**
+intercepts `/view/:id` and, **for crawler user-agents only**, fetches the event
+from the public backend and injects `og:`/`twitter:` tags (and the `<title>`) via
+`HTMLRewriter` before returning the shell. Humans get the SPA untouched — no
+backend fetch, no rewrite. Functions ship inside the same `wrangler pages deploy`
+(no separate Worker); the function only runs on `/view/*`.
+
+- It reads `BACKEND_URL` (the backend origin for `get-event`); set it in the Pages
+  project's env vars for production. It falls back to the deployed Worker if unset.
+- **Run it locally** against your local backend (the plain `npm run dev` Vite server
+  does *not* execute Functions):
+
+  ```bash
+  npm run preview:pages      # build + `wrangler pages dev dist`
+  ```
+
+  `wrangler pages dev` auto-loads `.dev.vars` (gitignored) for `BACKEND_URL` — it
+  ships pointing at `http://localhost:8787`. Verify by curling with a bot UA:
+
+  ```bash
+  curl -sA Googlebot http://localhost:8788/view/<id> | grep 'og:title'
+  ```
+- `npm run typecheck` also type-checks `functions/` (via `functions/tsconfig.json`,
+  which pulls in `@cloudflare/workers-types`).
 
 > **Advisory — verifying a deploy on the right URL.** `wrangler pages deploy`
 > reads the *current git branch* to decide production vs preview. Deploying from
