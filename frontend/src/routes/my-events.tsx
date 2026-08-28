@@ -110,14 +110,23 @@ export default function MyEvents() {
     <main class="my-events">
       <header class="my-events-head">
         <h1>My events</h1>
-        <label class="filter-check">
-          <input
-            type="checkbox"
-            checked={showFinished()}
-            onChange={(e) => selectShowFinished(e.currentTarget.checked)}
-          />
-          Show finished
-        </label>
+        <div class="my-events-actions">
+          <button
+            class="link"
+            type="button"
+            onClick={() => navigate("/create-event")}
+          >
+            + New social
+          </button>
+          <label class="filter-check">
+            <input
+              type="checkbox"
+              checked={showFinished()}
+              onChange={(e) => selectShowFinished(e.currentTarget.checked)}
+            />
+            Show finished
+          </label>
+        </div>
       </header>
 
       <Show when={failed()}>

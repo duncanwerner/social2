@@ -118,9 +118,12 @@ textarea {
   resize: vertical;
 }
 /* Safari gives native date inputs an intrinsic min-width and ignores
-   width:100%, so they overflow their flex column. Let them shrink. */
+   width:100%, so they overflow their flex column. Let them shrink. min-height
+   keeps an *empty* one from collapsing on iOS Safari (with appearance:none there
+   is no value text to size the box) — matches the sibling inputs' 41px. */
 input[type="date"] {
   min-width: 0;
+  min-height: 41px;
   -webkit-appearance: none;
   appearance: none;
 }
@@ -935,9 +938,15 @@ button.danger:disabled {
 }
 .my-events-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
+}
+.my-events-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 .my-events-head h1 {
   margin: 0;
