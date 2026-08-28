@@ -35,6 +35,12 @@ export interface RecordEntity {
   data: unknown;
   channel: string;
   created_at: string;
+  /**
+   * Provisional, unauthenticated player-entered scores: a map of
+   * `matchupId -> [a, b]`, overlaid on the owner-authoritative `data` scores at
+   * read time. Always present (defaults to `{}`) from the backend.
+   */
+  player_scores?: Record<string, [number, number]>;
   /** Only from GET /get-event: true when the caller's token owns the record. */
   owner?: boolean;
 }
@@ -77,4 +83,26 @@ export function isRecordUpdate(msg: unknown): msg is RecordUpdate {
     msg !== null &&
     (msg as { kind?: unknown }).kind === "record.updated"
   );
+}
+
+/** The frame broadcast when a player submits a provisional score for a matchup. */
+export interface ScoreProposed {
+  kind: "score.proposed";
+  matchupId: string;
+  score: [number, number];
+}
+
+/** Narrow a parsed WebSocket frame to a provisional-score envelope. */
+export function isScoreProposed(msg: unknown): msg is ScoreProposed {
+  return (
+    typeof msg === "object" &&
+    msg !== null &&
+    (msg as { kind?: unknown }).kind === "score.proposed"
+  );
+}
+
+/** POST /submit-score — how many live sockets received the proposed score. */
+export interface SubmitScoreResponse {
+  ok: true;
+  delivered: number;
 }

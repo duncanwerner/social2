@@ -25,6 +25,8 @@ export interface Standing {
   gamesDiff: number;
   /** Football points: 3·wins + 1·draws. */
   points: number;
+  /** True when any counted result includes an unconfirmed player-entered score. */
+  provisional: boolean;
 }
 
 /** A standing with its 1-based table position (ties share a position). */
@@ -49,6 +51,7 @@ export function computeStandings(event: SocialEvent): Standing[] {
       gamesAgainst: 0,
       gamesDiff: 0,
       points: 0,
+      provisional: false,
     });
   }
 
@@ -56,6 +59,7 @@ export function computeStandings(event: SocialEvent): Standing[] {
     for (const m of round.matchups) {
       const [a, b] = m.score;
       if (a < 0 || b < 0) continue; // not yet scored
+      const prov = m.provisional === true; // unconfirmed player-entered score
 
       const tally = (
         team: readonly PlayerID[],
@@ -72,6 +76,7 @@ export function computeStandings(event: SocialEvent): Standing[] {
           if (result === "win") r.wins += 1;
           else if (result === "draw") r.draws += 1;
           else r.losses += 1;
+          if (prov) r.provisional = true;
         }
       };
 

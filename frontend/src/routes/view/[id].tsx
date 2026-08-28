@@ -6,13 +6,19 @@ import {
   useParams,
   type RouteSectionProps,
 } from "@solidjs/router";
-import { getRecord, updateRecord } from "../../records";
+import { getRecord, submitScore, updateRecord } from "../../records";
 import { ApiError } from "../../api-error";
 import { createSocket, type SocketClient } from "../../socket";
-import { isRecordUpdate } from "../../protocol";
+import { isRecordUpdate, isScoreProposed } from "../../protocol";
 import { isFinished } from "../../event-status";
 import { ErrorView } from "../../components/ErrorView";
-import { ViewContext, type ViewConnection, type ViewLive } from "../../view-live";
+import {
+  overlayProvisional,
+  ViewContext,
+  type ProvisionalScores,
+  type ViewConnection,
+  type ViewLive,
+} from "../../view-live";
 import type { SocialEvent } from "../../types";
 
 // Layout for /view/:id/*. Loads the record (public GET) keyed on the id; if the
@@ -25,10 +31,18 @@ export default function ViewLayout(props: RouteSectionProps) {
   const location = useLocation();
 
   const [event, setEvent] = createSignal<SocialEvent | null>(null);
+  const [provisional, setProvisional] = createSignal<ProvisionalScores>({});
   const [eventStatus, setEventStatus] = createSignal(0);
   const [connection, setConnection] = createSignal<ViewConnection>("loading");
   const [error, setError] = createSignal<string | null>(null);
   const [isOwner, setIsOwner] = createSignal(false);
+
+  // The owner-authoritative event with provisional player scores overlaid, for
+  // display. `event()` stays raw for owner saves and persisted-score comparisons.
+  const mergedEvent = (): SocialEvent | null => {
+    const ev = event();
+    return ev ? overlayProvisional(ev, provisional()) : null;
+  };
 
   // Load the record and (unless finished) subscribe to its channel — keyed on the
   // record id. The router keeps this layout mounted when navigating /view/A →
@@ -43,6 +57,7 @@ export default function ViewLayout(props: RouteSectionProps) {
       let client: SocketClient | undefined;
       // Reset to the loading state for the new id.
       setEvent(null);
+      setProvisional({});
       setError(null);
       setIsOwner(false);
       setConnection("loading");
@@ -52,6 +67,7 @@ export default function ViewLayout(props: RouteSectionProps) {
           const record = await getRecord(id);
           if (cancelled) return;
           setEvent(record.data as SocialEvent);
+          setProvisional(record.player_scores ?? {});
           setEventStatus(record.status);
           setIsOwner(record.owner === true);
 
@@ -67,8 +83,20 @@ export default function ViewLayout(props: RouteSectionProps) {
               if (!cancelled) setConnection(s);
             },
             onEvent: (msg) => {
-              if (cancelled || !isRecordUpdate(msg)) return;
+              if (cancelled) return;
+              if (isScoreProposed(msg)) {
+                // Patch the single matchup's provisional score live.
+                setProvisional((prev) => ({
+                  ...prev,
+                  [msg.matchupId]: msg.score,
+                }));
+                return;
+              }
+              if (!isRecordUpdate(msg)) return;
               setEvent(msg.record.data as SocialEvent);
+              // Re-seed the overlay from the record (an owner save may have
+              // confirmed/pruned provisional entries).
+              setProvisional(msg.record.player_scores ?? {});
               setEventStatus(msg.record.status);
               if (isFinished(msg.record.status)) {
                 client?.close();
@@ -103,8 +131,18 @@ export default function ViewLayout(props: RouteSectionProps) {
     await updateRecord({ id: params.id, data: next });
   }
 
+  // Any viewer: submit a provisional score for one matchup. Optimistically patch
+  // the overlay so the submitter sees it immediately; the broadcast echo re-applies
+  // the same value (idempotent).
+  async function submit(matchupId: string, score: [number, number]) {
+    setProvisional((prev) => ({ ...prev, [matchupId]: score }));
+    await submitScore({ id: params.id, matchupId, score });
+  }
+
   const live: ViewLive = {
     event,
+    mergedEvent,
+    provisional,
     eventStatus,
     connection,
     // Getter so consumers read the current id even if the layout is reused
@@ -114,6 +152,7 @@ export default function ViewLayout(props: RouteSectionProps) {
     },
     isOwner,
     save,
+    submitScore: submit,
   };
 
   const base = () => `/view/${params.id}`;

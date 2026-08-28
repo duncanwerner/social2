@@ -5,6 +5,7 @@ import { clearAuth, token } from "./auth";
 import type {
   MyEventsResponse,
   RecordEntity,
+  SubmitScoreResponse,
   UpdateRecordResponse,
 } from "./protocol";
 import type { SocialEvent } from "./types";
@@ -75,6 +76,23 @@ export function updateRecord(
   base: string = BACKEND_URL,
 ): Promise<UpdateRecordResponse> {
   return request<UpdateRecordResponse>(`${normalizeBase(base)}/update-event`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * Submit a provisional score for one matchup. Public (no account needed) — the
+ * record id is the capability. Gated per-event by the owner's `allowPlayerScores`
+ * flag (else the backend returns 403). The header token is sent when present but
+ * isn't required.
+ */
+export function submitScore(
+  input: { id: string; matchupId: string; score: [number, number] },
+  base: string = BACKEND_URL,
+): Promise<SubmitScoreResponse> {
+  return request<SubmitScoreResponse>(`${normalizeBase(base)}/submit-score`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify(input),

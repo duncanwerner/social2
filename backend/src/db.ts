@@ -63,13 +63,14 @@ export async function recentEvents(
 
 // --- records ---------------------------------------------------------------
 
-/** Raw `records` row as stored in D1 (JSON `data` still a string). */
+/** Raw `records` row as stored in D1 (JSON `data`/`player_scores` still strings). */
 interface RecordRow {
   id: string;
   status: number;
   data: string;
   ownerid: string;
   channel: string;
+  player_scores: string | null;
   created_at: string;
 }
 
@@ -80,6 +81,8 @@ function toRecord(r: RecordRow): RecordEntity {
     data: safeParse(r.data),
     ownerid: r.ownerid,
     channel: r.channel,
+    // NULL column (record predates the feature, or no submissions yet) → {}.
+    player_scores: r.player_scores ? safeParse(r.player_scores) : {},
     created_at: r.created_at,
   };
 }
@@ -101,7 +104,7 @@ export async function insertRecord(
   const row = await env.DB.prepare(
     `INSERT INTO records (id, status, data, ownerid, channel)
      VALUES (?, ?, ?, ?, ?)
-     RETURNING id, status, data, ownerid, channel, created_at`,
+     RETURNING id, status, data, ownerid, channel, player_scores, created_at`,
   )
     .bind(input.id, input.status, input.data, input.ownerid, input.channel)
     .first<RecordRow>();
@@ -116,11 +119,40 @@ export async function getRecord(
   id: string,
 ): Promise<RecordEntity | null> {
   const row = await env.DB.prepare(
-    `SELECT id, status, data, ownerid, channel, created_at
+    `SELECT id, status, data, ownerid, channel, player_scores, created_at
      FROM records
      WHERE id = ?`,
   )
     .bind(id)
+    .first<RecordRow>();
+
+  return row ? toRecord(row) : null;
+}
+
+/**
+ * Merge a single provisional player score into a record's `player_scores` map,
+ * atomically. Expressed as one `json_patch` statement (not an app-level
+ * read-modify-write) so concurrent submissions can't lose an update: SQLite
+ * serializes writes to the row, distinct `matchupId` keys never collide, and the
+ * same matchup is last-write-wins. `patch` is `JSON.stringify({ [matchupId]: score })` —
+ * `json_patch` merges the object key in, sidestepping the JSON-path quoting a
+ * raw `json_set('$.'||id, …)` would need for hyphenated UUID keys. Returns the
+ * updated record, or null if no such record.
+ */
+export async function mergePlayerScore(
+  env: Env,
+  id: string,
+  matchupId: string,
+  score: [number, number],
+): Promise<RecordEntity | null> {
+  const patch = JSON.stringify({ [matchupId]: score });
+  const row = await env.DB.prepare(
+    `UPDATE records
+     SET player_scores = json_patch(coalesce(player_scores, '{}'), ?)
+     WHERE id = ?
+     RETURNING id, status, data, ownerid, channel, player_scores, created_at`,
+  )
+    .bind(patch, id)
     .first<RecordRow>();
 
   return row ? toRecord(row) : null;
@@ -141,7 +173,7 @@ export async function recordsByOwner(
     ? "ownerid = ?"
     : "ownerid = ? AND status = 0";
   const result = await env.DB.prepare(
-    `SELECT id, status, data, ownerid, channel, created_at
+    `SELECT id, status, data, ownerid, channel, player_scores, created_at
      FROM records
      WHERE ${where}
      ORDER BY created_at DESC, id DESC
@@ -178,7 +210,7 @@ export async function updateRecord(
     `UPDATE records
      SET ${sets.join(", ")}
      WHERE id = ?
-     RETURNING id, status, data, ownerid, channel, created_at`,
+     RETURNING id, status, data, ownerid, channel, player_scores, created_at`,
   )
     .bind(...binds, id)
     .first<RecordRow>();

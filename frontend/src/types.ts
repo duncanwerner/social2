@@ -58,4 +58,11 @@ export interface SocialEvent {
   rounds?: Round[];
   /** Optimizer configuration; absent means defaults. */
   options?: Partial<Options>;
+  /**
+   * When true, unauthenticated players (anyone with the /view/:id link) may enter
+   * provisional match scores, shown live to everyone until the owner confirms
+   * them by saving. Absent/false means owner-only scoring (the default). Kept
+   * top-level (not in `options`) so it never crosses the optimizer worker boundary.
+   */
+  allowPlayerScores?: boolean;
 }

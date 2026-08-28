@@ -1,4 +1,4 @@
-import { createEffect, createSignal, untrack } from "solid-js";
+import { createEffect, createSignal, onCleanup, untrack } from "solid-js";
 import { For, Show } from "@solidjs/web";
 import { useViewLive } from "../../../view-live";
 import { generateRounds } from "../../../round-worker";
@@ -11,14 +11,30 @@ import type { Matchup, PlayerID, Team } from "../../../social";
 export default function ViewRounds() {
   const live = useViewLive();
 
+  // Raw (owner-authoritative) rounds — stable object identity, so iterating them
+  // doesn't tear down inputs when a provisional score arrives. Provisional scores
+  // are overlaid per-cell at display time (see displayScore below).
   const rounds = () => live.event()?.rounds ?? [];
   const canManage = () => live.isOwner() && !isFinished(live.eventStatus());
+  // Any non-owner viewer may enter scores when the owner has enabled the flag.
+  const canPlayerScore = () =>
+    !live.isOwner() &&
+    !isFinished(live.eventStatus()) &&
+    !!live.event()?.allowPlayerScores;
 
   const [viewIdx, setViewIdx] = createSignal(0);
   const [draft, setDraft] = createSignal<[number, number][]>([]);
   const [generating, setGenerating] = createSignal(false);
   const [savingScores, setSavingScores] = createSignal(false);
+  const [submitting, setSubmitting] = createSignal<number | null>(null);
+  // Matchup indices showing a transient "Submitted ✓" confirmation (player path).
+  const [submitted, setSubmitted] = createSignal<Set<number>>(new Set());
+  // Cells ("m:side") the owner/player has hand-edited since the round was seeded;
+  // live provisional updates refresh only the *un*touched cells (see reseed effect).
+  const [touched, setTouched] = createSignal<Set<string>>(new Set());
   const [error, setError] = createSignal("");
+  let confirmTimers: ReturnType<typeof setTimeout>[] = [];
+  onCleanup(() => confirmTimers.forEach(clearTimeout));
 
   // Jump to the newest round whenever a round is appended (length changes).
   createEffect(
@@ -26,23 +42,6 @@ export default function ViewRounds() {
     (len) => {
       if (len > 0) setViewIdx(len - 1);
     },
-  );
-
-  // Seed editable scores when the viewed round changes or a round is added.
-  // The tracked value must be a STABLE primitive (a string key), not a fresh
-  // array — otherwise Solid's reference compare treats every event update as a
-  // change and the reseed wipes the owner's in-progress edits (their own save
-  // echo included).
-  createEffect(
-    () => `${viewIdx()}|${rounds().length}`,
-    () =>
-      // Point-in-time read: the effect keys on the string above and must NOT
-      // subscribe to rounds()/viewIdx() here (per the note above), else a content
-      // change with the same length re-runs it and wipes in-progress edits.
-      untrack(() => {
-        const r = rounds()[viewIdx()];
-        setDraft(r ? r.matchups.map((m) => [m.score[0], m.score[1]]) : []);
-      }),
   );
 
   const round = () => rounds()[viewIdx()];
@@ -55,13 +54,82 @@ export default function ViewRounds() {
   const courtName = (i: number) =>
     live.event()?.courts[i]?.name?.trim() || `Court ${i + 1}`;
 
+  // Provisional (player-entered) score for a matchup: present only when the owner
+  // hasn't scored it and a player has proposed one. Owner scores always win.
+  const provisionalFor = (m: Matchup): [number, number] | undefined => {
+    if (m.score[0] >= 0 || m.score[1] >= 0) return undefined; // owner scored
+    return m.id ? live.provisional()[m.id] : undefined;
+  };
+  const isProvisional = (m: Matchup) => provisionalFor(m) !== undefined;
+  // The score to show: owner score if entered, else the provisional one, else -1.
+  const displayScore = (m: Matchup, side: 0 | 1): number => {
+    const p = provisionalFor(m);
+    return p ? p[side] : m.score[side];
+  };
+  // Has the owner scored this matchup (by index within the current round)?
+  const ownerScored = (m: number): boolean => {
+    const s = round()?.matchups[m]?.score;
+    return !!s && (s[0] >= 0 || s[1] >= 0);
+  };
+
   // The winning side of a matchup once both scores are in: 0 = A, 1 = B, -1 =
-  // unscored or a draw (no team highlighted).
+  // unscored or a draw (no team highlighted). Uses displayed (owner-or-provisional)
+  // scores.
   const winner = (m: Matchup): 0 | 1 | -1 => {
-    const [a, b] = m.score;
+    const a = displayScore(m, 0);
+    const b = displayScore(m, 1);
     if (a < 0 || b < 0 || a === b) return -1;
     return a > b ? 0 : 1;
   };
+
+  // Seed/refresh the editable score inputs from the displayed scores. The tracked
+  // key includes both the round identity AND a signature of the displayed scores,
+  // so a live provisional submission (which changes the scores but not the round
+  // length) re-runs this and the owner sees it immediately. To avoid clobbering
+  // in-progress typing, cells the user has hand-edited (`touched`) are preserved;
+  // only untouched cells pick up the new value. Switching rounds clears `touched`
+  // and reseeds everything. (Defined here, after displayScore — this Solid 2 RC
+  // evaluates the dependency function eagerly, so it must not close over a
+  // not-yet-initialised const.)
+  let prevRoundKey = "";
+  createEffect(
+    () => {
+      const r = rounds()[viewIdx()];
+      const sig = r
+        ? r.matchups.map((m) => `${displayScore(m, 0)}/${displayScore(m, 1)}`).join(",")
+        : "";
+      return `${viewIdx()}|${rounds().length}##${sig}`;
+    },
+    (key) =>
+      untrack(() => {
+        const roundKey = key.slice(0, key.indexOf("##"));
+        const roundChanged = roundKey !== prevRoundKey;
+        prevRoundKey = roundKey;
+        const r = rounds()[viewIdx()];
+        if (!r) {
+          if (roundChanged) setTouched(new Set<string>());
+          setDraft([]);
+          return;
+        }
+        if (roundChanged) {
+          // A different round is in view — forget prior edits, reseed all cells.
+          setTouched(new Set<string>());
+          setDraft(r.matchups.map((m) => [displayScore(m, 0), displayScore(m, 1)]));
+          return;
+        }
+        // Same round, displayed scores changed live (e.g. a player just submitted):
+        // refresh only the cells the user hasn't edited.
+        const t = touched();
+        setDraft((prev) =>
+          r.matchups.map((m, i) => {
+            const cur = prev[i];
+            const s0 = t.has(`${i}:0`) && cur ? cur[0] : displayScore(m, 0);
+            const s1 = t.has(`${i}:1`) && cur ? cur[1] : displayScore(m, 1);
+            return [s0, s1];
+          }),
+        );
+      }),
+  );
 
   const scoreLabel = (n: number) => (n < 0 ? "—" : String(n));
   const draftVal = (m: number, side: 0 | 1) => {
@@ -70,6 +138,8 @@ export default function ViewRounds() {
   };
   const setScore = (m: number, side: 0 | 1, value: string) => {
     const n = value === "" ? -1 : Math.max(0, Math.floor(Number(value) || 0));
+    // Mark this cell hand-edited so a live provisional update won't overwrite it.
+    setTouched((t) => new Set<string>(t).add(`${m}:${side}`));
     setDraft((prev) => {
       const copy = prev.map((p) => [p[0], p[1]] as [number, number]);
       if (copy[m]) copy[m][side] = n;
@@ -155,10 +225,41 @@ export default function ViewRounds() {
     setError("");
     try {
       await live.save(next);
+      // Scores are now persisted; forget the edit marks so later live provisional
+      // updates for this round flow into the inputs again.
+      setTouched(new Set<string>());
     } catch (e) {
       setError(`Could not save scores — ${errMsg(e)}`);
     } finally {
       setSavingScores(false);
+    }
+  }
+
+  // Player path: submit one matchup's provisional score. Both sides must be
+  // entered. Goes to /submit-score (not the owner save), broadcasts to everyone.
+  async function submitOne(m: number) {
+    const mu = round()?.matchups[m];
+    const d = draft()[m];
+    if (!mu || !d || d[0] < 0 || d[1] < 0 || submitting() !== null) return;
+    setSubmitting(m);
+    setError("");
+    try {
+      await live.submitScore(mu.id, [d[0], d[1]]);
+      // Show a "Submitted ✓" confirmation on this matchup for ~3s.
+      setSubmitted((s) => new Set<number>(s).add(m));
+      confirmTimers.push(
+        setTimeout(() => {
+          setSubmitted((s) => {
+            const next = new Set(s);
+            next.delete(m);
+            return next;
+          });
+        }, 3000),
+      );
+    } catch (e) {
+      setError(`Could not submit score — ${errMsg(e)}`);
+    } finally {
+      setSubmitting(null);
     }
   }
 
@@ -210,48 +311,79 @@ export default function ViewRounds() {
         </header>
 
         <For each={round()?.matchups ?? []}>
-          {(m, i) => (
-            <section class="card matchup">
-              <div class="court-label">{courtName(i())}</div>
-              <div class="team-row">
-                <span class={winner(m) === 0 ? "team win" : "team"}>
-                  {teamName(m.A)}
-                </span>
-                <Show
-                  when={canManage()}
-                  fallback={<span class="score">{scoreLabel(m.score[0])}</span>}
-                >
-                  <input
-                    class={isDirty(i(), 0) ? "score-input dirty" : "score-input"}
-                    type="number"
-                    inputmode="numeric"
-                    min="0"
-                    value={draftVal(i(), 0)}
-                    onInput={(e) => setScore(i(), 0, e.currentTarget.value)}
-                  />
+          {(m, i) => {
+            // A cell is editable for the owner, or for a player when the owner
+            // hasn't already scored this matchup.
+            const editable = () => canManage() || (canPlayerScore() && !ownerScored(i()));
+            const inputClass = (side: 0 | 1) =>
+              canManage()
+                ? isDirty(i(), side)
+                  ? "score-input dirty"
+                  : "score-input"
+                : isProvisional(m)
+                  ? "score-input provisional"
+                  : "score-input";
+            const cell = (side: 0 | 1) => (
+              <Show
+                when={editable()}
+                fallback={
+                  <span class={isProvisional(m) ? "score provisional" : "score"}>
+                    {scoreLabel(displayScore(m, side))}
+                  </span>
+                }
+              >
+                <input
+                  class={inputClass(side)}
+                  type="number"
+                  inputmode="numeric"
+                  min="0"
+                  value={draftVal(i(), side)}
+                  onInput={(e) => setScore(i(), side, e.currentTarget.value)}
+                />
+              </Show>
+            );
+            return (
+              <section class="card matchup">
+                <div class="court-label">{courtName(i())}</div>
+                <div class="team-row">
+                  <span class={winner(m) === 0 ? "team win" : "team"}>
+                    {teamName(m.A)}
+                  </span>
+                  {cell(0)}
+                </div>
+                <div class="vs">vs</div>
+                <div class="team-row">
+                  <span class={winner(m) === 1 ? "team win" : "team"}>
+                    {teamName(m.B)}
+                  </span>
+                  {cell(1)}
+                </div>
+                <Show when={canPlayerScore() && !ownerScored(i())}>
+                  <button
+                    class={
+                      submitted().has(i())
+                        ? "secondary submit-score"
+                        : "primary submit-score"
+                    }
+                    type="button"
+                    disabled={
+                      submitting() === i() ||
+                      submitted().has(i()) ||
+                      draftVal(i(), 0) === "" ||
+                      draftVal(i(), 1) === ""
+                    }
+                    onClick={() => submitOne(i())}
+                  >
+                    {submitting() === i()
+                      ? "Submitting…"
+                      : submitted().has(i())
+                        ? "Submitted ✓"
+                        : "Submit score"}
+                  </button>
                 </Show>
-              </div>
-              <div class="vs">vs</div>
-              <div class="team-row">
-                <span class={winner(m) === 1 ? "team win" : "team"}>
-                  {teamName(m.B)}
-                </span>
-                <Show
-                  when={canManage()}
-                  fallback={<span class="score">{scoreLabel(m.score[1])}</span>}
-                >
-                  <input
-                    class={isDirty(i(), 1) ? "score-input dirty" : "score-input"}
-                    type="number"
-                    inputmode="numeric"
-                    min="0"
-                    value={draftVal(i(), 1)}
-                    onInput={(e) => setScore(i(), 1, e.currentTarget.value)}
-                  />
-                </Show>
-              </div>
-            </section>
-          )}
+              </section>
+            );
+          }}
         </For>
 
         <Show when={(round()?.sitting?.length ?? 0) > 0}>

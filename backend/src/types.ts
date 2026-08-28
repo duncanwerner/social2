@@ -38,6 +38,13 @@ export interface RecordEntity {
   data: unknown; // decoded JSON
   ownerid: string;
   channel: string;
+  /**
+   * Provisional, unauthenticated player-entered scores: a decoded JSON map of
+   * `matchupId -> [a, b]`. Overlaid at read time on the owner-authoritative
+   * `data` scores (owner wins for any matchup whose data score isn't `[-1,-1]`).
+   * Defaults to `{}` when the column is NULL.
+   */
+  player_scores: unknown;
   created_at: string;
 }
 
@@ -62,14 +69,35 @@ export interface UpdateEventRequest {
   data?: unknown;
 }
 
+/**
+ * Body of a POST /submit-score request. Public (unauthenticated): a player
+ * proposes a provisional score for one matchup on a record. `matchupId` keys the
+ * `player_scores` overlay; `score` is `[a, b]`.
+ */
+export interface SubmitScoreRequest {
+  id: string;
+  matchupId: string;
+  score: [number, number];
+}
+
 /** Pushed to a record's channel when the record changes. */
 export interface RecordUpdate {
   kind: "record.updated";
   record: PublicRecord;
 }
 
+/**
+ * Pushed to a record's channel when a player submits a provisional score, so
+ * every live viewer sees it without a full record rewrite.
+ */
+export interface ScoreProposed {
+  kind: "score.proposed";
+  matchupId: string;
+  score: [number, number];
+}
+
 /** The message pushed to connected WebSocket clients. */
-export type OutboundMessage = EventRecord | RecordUpdate;
+export type OutboundMessage = EventRecord | RecordUpdate | ScoreProposed;
 
 /** A user row. `password` is the encoded PBKDF2 hash (never returned to clients). */
 export interface User {

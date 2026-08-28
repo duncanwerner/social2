@@ -29,13 +29,15 @@ low (dozens of clients, tens of events/hour).
   events. `setWebSocketAutoResponse` answers client `ping` with `pong` without
   waking the DO.
 - **Records.** First-class entities (padel socials) in the `records` D1 table
-  (`id` UUID, `status` int, `data` JSON, `ownerid`, `channel`, `created_at`),
-  managed over HTTP. `update-event` broadcasts the new record to its `channel` as
-  a `{ kind: "record.updated", record }` frame (reusing `stub.broadcast`).
+  (`id` UUID, `status` int, `data` JSON, `ownerid`, `channel`, `player_scores`
+  JSON, `created_at`), managed over HTTP. `update-event` broadcasts the new record
+  to its `channel` as a `{ kind: "record.updated", record }` frame (reusing
+  `stub.broadcast`).
 - **Endpoints:** `GET /connect?channel=X` (WS upgrade), `POST /publish`,
   `GET /history?channel=X&limit=n`, `POST /create-event`, `GET /get-event?id=X`,
   `POST /update-event`, `GET /my-events?page=n&all=0|1` (owner's own records,
   newest first, 12/page, auth-gated, active-only unless `all=1`),
+  `POST /submit-score` (public provisional player scores — see below),
   `GET /recovery?token=X` + `POST /set-password` (recovery flow, both public — see
   Auth), `GET /healthz`.
   Channel names must match `^[A-Za-z0-9._:-]{1,128}$`. HTTP endpoints send
@@ -46,9 +48,10 @@ low (dozens of clients, tens of events/hour).
   `backend/src/auth.ts`; sessions store the token's SHA-256 hash. `create-event`
   and `update-event` require a token — the record owner is the authenticated user
   (`ownerid` server-derived, never returned); `update-event` is owner-only (403).
-  `get-event` and `/connect` are public (viewers need no account; browsers can't
-  set headers on a WS upgrade, so gating `/connect` later means a `?token=` param).
-  Frontend keeps the token in `localStorage` and sends `Authorization: Bearer`.
+  `get-event`, `/connect`, and `/submit-score` are public (viewers need no account;
+  browsers can't set headers on a WS upgrade, so gating `/connect` later means a
+  `?token=` param). Frontend keeps the token in `localStorage` and sends
+  `Authorization: Bearer`.
 - **Password recovery (no email).** The "forgot password" flow, minus any mail
   server: an admin mints a **recovery token** for a user and emails them a
   `/set-password?token=X` link. `create-user` no longer prints a password — it
@@ -61,6 +64,25 @@ low (dozens of clients, tens of events/hour).
   validates a token (returns the username for the form); `POST /set-password
   {token, password}` (min 8 chars) sets the password, consumes the token, and
   issues a session for auto sign-in. Both public — the token is the credential.
+- **Provisional player scores (unauthenticated).** When a record's
+  `data.allowPlayerScores` is on, anyone with the public `/view/:id` link can
+  propose match scores via `POST /submit-score {id, matchupId, score}` (public —
+  the record id is the capability, like `/connect`; 403 if the flag is off, 400 for
+  an unknown `matchupId`). These live in the **separate `player_scores` column**
+  (`{ matchupId: [a,b] }`), decoupled from the owner's `data` writes so neither
+  clobbers the other. Precedence is a read-time overlay: the owner's `data` score
+  wins for any matchup it has scored (score ≠ `[-1,-1]`); otherwise the player
+  score shows as **provisional**. Writes are race-safe via one atomic
+  `json_patch(coalesce(player_scores,'{}'), ?)` statement (distinct matchup keys
+  never collide, same-key is last-write-wins) — see `mergePlayerScore` in `db.ts`,
+  not app-level read-modify-write. Each submission broadcasts a
+  `{ kind: "score.proposed", matchupId, score }` frame so live viewers update. The
+  overlay is keyed by a stable **matchup id** (minted in `social.ts`), so owner
+  regeneration orphans stale proposals automatically (ephemeral by design).
+  `get-event` and `record.updated` carry `player_scores` so viewers see it on cold
+  load. Schema note: no migration framework — a new `records` column means editing
+  `schema.sql`, the inline `SCHEMA` copy in `test/integration.test.ts`, AND a
+  one-off `ALTER TABLE` (`--local` and `--remote`) for existing DBs.
 
 Key files: `backend/src/index.ts` (routing), `backend/src/channel-hub.ts` (DO),
 `backend/src/db.ts` (D1), `backend/src/auth.ts` (PBKDF2 + tokens),
@@ -122,9 +144,25 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
   last round. Disabled players are folded into the optimizer's `force_sitting` at
   generation time, so they get no court until re-enabled. Saving calls
   `update-event`, which broadcasts to every viewer live.
+- **Provisional player scores.** When the owner ticks **Let players enter scores**
+  (`EventEditor.tsx` → top-level `SocialEvent.allowPlayerScores`), non-owner viewers
+  get per-matchup score inputs + a **Submit** button on the rounds page (→
+  `submitScore` in `records.ts` → `/submit-score`). The layout keeps a separate
+  `provisional` overlay signal (seeded from `record.player_scores`, patched by
+  `score.proposed` frames) and exposes a derived `mergedEvent` (`view-live.ts`
+  `overlayProvisional`) that the rounds + stats pages read; raw `event()` stays
+  owner-authoritative for saves. Provisional scores render red-tinted, and the
+  owner's inputs pre-fill with them as **dirty** so **Save scores** blesses them
+  (no accept button — precedence flips once persisted). The rounds page's reseed
+  effect keys on the *displayed* scores so live submissions appear immediately, but
+  a `touched`-cells set preserves whatever the owner/player is mid-typing.
+  **Gotcha:** that effect is declared *after* its `displayScore` helper because this
+  Solid 2 RC evaluates a `createEffect` dependency fn eagerly — a dep closing over a
+  `const` declared below it hits the TDZ, and the effect silently never registers.
 - **Stats** (`stats.tsx` + `standings.ts`) — a live league table with two modes:
   **Games** (games won/lost, Win%, ±) and **Matches** (football 3/1/0 points).
-  Competition ranking (ties share a rank); leaders get a crown + bold row.
+  Competition ranking (ties share a rank); leaders get a crown + bold row. Rows
+  whose totals include a provisional score get an **asterisk** (after the medal).
 - **Domain types** in `types.ts` (`SocialEvent`/`Player`/`Court`; `Player.disabled`,
   `metadata.time` are optional); the optimizer's branded `PlayerID`/`Round` live in
   `social.ts`. Backend wire types in `protocol.ts`; the records/auth clients in

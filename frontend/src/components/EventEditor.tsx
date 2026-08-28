@@ -149,6 +149,11 @@ function EventEditorForm(props: EventEditorFormProps) {
   const [evDescription, setEvDescription] = createSignal(
     initial.metadata.description,
   );
+  // Let unauthenticated players (anyone with the view link) enter provisional
+  // scores, shown live to everyone until the owner confirms them by saving.
+  const [allowPlayerScores, setAllowPlayerScores] = createSignal(
+    !!initial.allowPlayerScores,
+  );
 
   const [playerNames, setPlayerNames] = createSignal<string[]>(
     initial.players.map((p) => p.name),
@@ -294,6 +299,9 @@ function EventEditorForm(props: EventEditorFormProps) {
       date: evDate(),
       time: evTime().trim(),
     },
+    // Explicit (not just via the `...base` spread) so toggling it off actually
+    // overwrites the stale value on the merge base.
+    allowPlayerScores: allowPlayerScores(),
   });
 
   // Fetch the current record as the merge base — the live rounds page writes
@@ -374,6 +382,7 @@ function EventEditorForm(props: EventEditorFormProps) {
       p: playerNames(),
       c: courtNames(),
       dis: playerDisabled(),
+      aps: allowPlayerScores(),
     });
   // Untracked: a one-time capture of the form's initial serialized state. The
   // effect below compares against it to skip the mount fire (and reverts).
@@ -473,6 +482,23 @@ function EventEditorForm(props: EventEditorFormProps) {
             }}
             placeholder="Optional notes"
           />
+        </label>
+        <label class="field-check">
+          <input
+            type="checkbox"
+            checked={allowPlayerScores()}
+            onChange={(e) => {
+              setAllowPlayerScores(e.currentTarget.checked);
+              setSaved(false);
+            }}
+          />
+          <span>
+            Let players enter scores
+            <span class="hint">
+              Anyone with the view link can submit provisional scores; they show
+              live until you confirm them by saving.
+            </span>
+          </span>
         </label>
       </section>
 

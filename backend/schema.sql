@@ -16,12 +16,13 @@ CREATE INDEX IF NOT EXISTS idx_events_channel ON events (channel, id);
 -- updated over HTTP. Each is bound to a websocket `channel` so updates can be
 -- broadcast live to connected clients.
 CREATE TABLE IF NOT EXISTS records (
-  id         TEXT PRIMARY KEY,          -- UUID, generated in the Worker
-  status     INTEGER NOT NULL DEFAULT 0,
-  data       TEXT NOT NULL,             -- JSON-encoded record body
-  ownerid    TEXT NOT NULL,
-  channel    TEXT NOT NULL,             -- websocket channel / Durable Object name
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id            TEXT PRIMARY KEY,       -- UUID, generated in the Worker
+  status        INTEGER NOT NULL DEFAULT 0,
+  data          TEXT NOT NULL,          -- JSON-encoded record body
+  ownerid       TEXT NOT NULL,
+  channel       TEXT NOT NULL,          -- websocket channel / Durable Object name
+  player_scores TEXT,                   -- JSON map matchupId -> [a,b]; provisional, unauthenticated player-entered scores (owner data wins)
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_channel ON records (channel);

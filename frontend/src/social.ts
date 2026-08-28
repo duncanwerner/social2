@@ -12,11 +12,24 @@ export type Team = [PlayerID, PlayerID];
 /** represents a match; two teams */
 export interface Matchup {
 
+  /**
+   * Stable identity for this matchup, minted at generation time. Keys the
+   * provisional `player_scores` overlay so a regenerated round (new matchups →
+   * new ids) automatically orphans stale player submissions.
+   */
+  id: string;
+
   A: Team;
   B: Team;
 
   /** implicitly [A, B] */
   score: [number, number];
+
+  /**
+   * Transient, view-only: set on the merged copy when this matchup's score came
+   * from an unconfirmed player submission (not the owner). Never persisted.
+   */
+  provisional?: boolean;
 }
 
 /** represents a round; some matchups plus who has to sit */
@@ -113,7 +126,7 @@ const RandomRound = (players: PlayerID[], courts: number): Round => {
   for (let i = 0; i < fours; i++) {
     const A: Team = [shuffled[index++], shuffled[index++]];
     const B: Team = [shuffled[index++], shuffled[index++]];
-    round.matchups.push({A, B, score: [-1, -1]});
+    round.matchups.push({id: crypto.randomUUID(), A, B, score: [-1, -1]});
   }
 
   for (; index < count; index++) {

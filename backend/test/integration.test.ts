@@ -24,6 +24,7 @@ const SCHEMA = [
      data TEXT NOT NULL,
      ownerid TEXT NOT NULL,
      channel TEXT NOT NULL,
+     player_scores TEXT,
      created_at TEXT NOT NULL DEFAULT (datetime('now'))
    )`,
   `CREATE INDEX IF NOT EXISTS idx_records_channel ON records (channel)`,
@@ -284,6 +285,126 @@ describe("records HTTP API", () => {
     expect((await updateEvent({ status: 1 })).status).toBe(400);
     // no fields to update
     expect((await updateEvent({ id: created.id })).status).toBe(400);
+  });
+});
+
+describe("POST /submit-score (provisional player scores)", () => {
+  // A record with the feature enabled and a round of two identified matchups.
+  function enabledData() {
+    return {
+      allowPlayerScores: true,
+      rounds: [
+        {
+          matchups: [
+            { id: "m1", A: [0, 1], B: [2, 3], score: [-1, -1] },
+            { id: "m2", A: [4, 5], B: [6, 7], score: [-1, -1] },
+          ],
+          sitting: [],
+        },
+      ],
+    };
+  }
+
+  async function createRec(data: unknown, channel: string) {
+    return ((await (
+      await SELF.fetch("https://example.com/create-event", {
+        method: "POST",
+        headers: authHeaders(ownerToken),
+        body: JSON.stringify({ data, channel }),
+      })
+    ).json()) as { id: string }).id;
+  }
+
+  function submit(body: unknown) {
+    return SELF.fetch("https://example.com/submit-score", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("stores a provisional score and broadcasts score.proposed to the channel", async () => {
+    const id = await createRec(enabledData(), "ps-live");
+
+    const ws = (
+      await SELF.fetch("https://example.com/connect?channel=ps-live", {
+        headers: { Upgrade: "websocket" },
+      })
+    ).webSocket!;
+    ws.accept();
+    const got = new Promise<string>((resolve) => {
+      ws.addEventListener("message", (e: MessageEvent) => resolve(e.data as string), {
+        once: true,
+      });
+    });
+    // A socket on a different channel must NOT receive it.
+    let otherReceived = false;
+    const otherWs = (
+      await SELF.fetch("https://example.com/connect?channel=ps-other", {
+        headers: { Upgrade: "websocket" },
+      })
+    ).webSocket!;
+    otherWs.accept();
+    otherWs.addEventListener("message", () => (otherReceived = true));
+
+    const res = await submit({ id, matchupId: "m1", score: [6, 4] });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { delivered: number }).toEqual({
+      ok: true,
+      delivered: 1,
+    });
+
+    const msg = JSON.parse(await got) as {
+      kind: string;
+      matchupId: string;
+      score: [number, number];
+    };
+    expect(msg.kind).toBe("score.proposed");
+    expect(msg.matchupId).toBe("m1");
+    expect(msg.score).toEqual([6, 4]);
+    expect(otherReceived).toBe(false);
+
+    // get-event returns the overlay so cold-loading viewers can render it.
+    const got2 = (await (
+      await SELF.fetch(`https://example.com/get-event?id=${id}`)
+    ).json()) as { player_scores: Record<string, [number, number]> };
+    expect(got2.player_scores).toEqual({ m1: [6, 4] });
+  });
+
+  it("merges two different matchups without losing either (atomic write)", async () => {
+    const id = await createRec(enabledData(), "ps-merge");
+    expect((await submit({ id, matchupId: "m1", score: [6, 3] })).status).toBe(200);
+    expect((await submit({ id, matchupId: "m2", score: [7, 5] })).status).toBe(200);
+
+    const got = (await (
+      await SELF.fetch(`https://example.com/get-event?id=${id}`)
+    ).json()) as { player_scores: Record<string, [number, number]> };
+    expect(got.player_scores).toEqual({ m1: [6, 3], m2: [7, 5] });
+  });
+
+  it("403s when the feature is disabled for the record", async () => {
+    const id = await createRec(
+      { allowPlayerScores: false, rounds: enabledData().rounds },
+      "ps-off",
+    );
+    expect((await submit({ id, matchupId: "m1", score: [1, 0] })).status).toBe(403);
+  });
+
+  it("400s for an unknown matchup id (anti-bloat)", async () => {
+    const id = await createRec(enabledData(), "ps-unknown");
+    const res = await submit({ id, matchupId: "nope", score: [1, 0] });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toEqual({
+      error: "unknown_matchup",
+    });
+  });
+
+  it("400s for a malformed score and 404s for a missing record", async () => {
+    const id = await createRec(enabledData(), "ps-bad");
+    expect((await submit({ id, matchupId: "m1", score: [1] })).status).toBe(400);
+    expect((await submit({ id, matchupId: "m1", score: [-1, 2] })).status).toBe(400);
+    expect(
+      (await submit({ id: "nope", matchupId: "m1", score: [1, 0] })).status,
+    ).toBe(404);
   });
 });
 

@@ -352,6 +352,32 @@ button.link:disabled {
 .score-input.dirty:focus {
   border-color: var(--err);
 }
+/* Provisional (unconfirmed player-entered) scores are red-tinted until the
+   owner confirms them by saving. */
+.score.provisional {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 14%, transparent);
+  padding: 0 6px;
+  border-radius: 6px;
+}
+.score-input.provisional {
+  border-color: var(--err);
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 14%, transparent);
+}
+/* Per-matchup player submit button. */
+.submit-score {
+  margin-top: 4px;
+  align-self: flex-end;
+  padding: 6px 14px;
+  font-size: 14px;
+}
+/* Asterisk beside a standings row whose totals include provisional scores. */
+.provisional-mark {
+  color: var(--err);
+  font-weight: 700;
+  margin-left: 3px;
+}
 .vs {
   text-align: center;
   font-size: 12px;
@@ -632,6 +658,31 @@ button.secondary:disabled {
 .field-row .field {
   flex: 1;
   min-width: 0;
+}
+/* A checkbox + label/hint row (e.g. "Let players enter scores"). */
+.field-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+/* Opt the checkbox out of the global full-width input box (width:100% + panel
+   background/border/padding) so it renders as a native checkbox. */
+.field-check > input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  background: none;
+  border: none;
+}
+.field-check > span {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
 }
 
 /* count + stepper row */

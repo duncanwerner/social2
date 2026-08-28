@@ -16,6 +16,7 @@ import {
   insertRecord,
   insertSession,
   markRecoveryTokenUsed,
+  mergePlayerScore,
   recentEvents,
   recordsByOwner,
   updateRecord,
@@ -29,6 +30,7 @@ import type {
   PublishRequest,
   RecordEntity,
   SetPasswordRequest,
+  SubmitScoreRequest,
   UpdateEventRequest,
   User,
 } from "./types";
@@ -121,6 +123,9 @@ export default {
       }
       if (pathname === "/update-event" && request.method === "POST") {
         return handleUpdateEvent(request, env);
+      }
+      if (pathname === "/submit-score" && request.method === "POST") {
+        return handleSubmitScore(request, env);
       }
       return json({ error: "not_found" }, 404);
     } catch (err) {
@@ -321,6 +326,9 @@ function publicRecord(record: RecordEntity): PublicRecord {
     status: record.status,
     data: record.data,
     channel: record.channel,
+    // Provisional player scores are public: viewers need them on cold load to
+    // render the overlay. Default to {} so the field is always present.
+    player_scores: record.player_scores ?? {},
     created_at: record.created_at,
   };
 }
@@ -477,4 +485,93 @@ async function handleUpdateEvent(
   const delivered = await stub.broadcast({ kind: "record.updated", record: view });
 
   return json({ ...view, delivered });
+}
+
+/**
+ * Does `data` (a decoded record body) contain a matchup with this id? Traverses
+ * `rounds[*].matchups[*].id` defensively — the body is untrusted `unknown`.
+ */
+function hasMatchup(data: unknown, matchupId: string): boolean {
+  if (typeof data !== "object" || data === null) return false;
+  const rounds = (data as { rounds?: unknown }).rounds;
+  if (!Array.isArray(rounds)) return false;
+  for (const round of rounds) {
+    const matchups = (round as { matchups?: unknown })?.matchups;
+    if (!Array.isArray(matchups)) continue;
+    for (const m of matchups) {
+      if ((m as { id?: unknown })?.id === matchupId) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * POST /submit-score {id, matchupId, score} — a provisional, unauthenticated
+ * player-entered score for one matchup. Public (no session): the record id is
+ * the capability, like /connect. Gated per-record by `data.allowPlayerScores`.
+ * Writes into the `player_scores` overlay (owner `data` scores still win at read
+ * time) and broadcasts a `score.proposed` frame so live viewers update.
+ */
+async function handleSubmitScore(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  // AUTH HOOK: intentionally public (see doc comment). No authenticate().
+  let body: SubmitScoreRequest;
+  try {
+    body = (await request.json()) as SubmitScoreRequest;
+  } catch {
+    return json({ error: "invalid_json" }, 400);
+  }
+
+  if (!body?.id || typeof body.id !== "string") {
+    return json({ error: "missing_event_id" }, 400);
+  }
+  if (typeof body.matchupId !== "string" || body.matchupId.length === 0) {
+    return json({ error: "invalid_matchup" }, 400);
+  }
+  const score = body.score;
+  if (
+    !Array.isArray(score) ||
+    score.length !== 2 ||
+    !score.every((n) => Number.isInteger(n) && n >= 0)
+  ) {
+    return json({ error: "invalid_score" }, 400);
+  }
+
+  const existing = await getRecord(env, body.id);
+  if (!existing) {
+    return json({ error: "event_not_found" }, 404);
+  }
+
+  // Per-event gate: the owner must have opted in.
+  const enabled =
+    typeof existing.data === "object" &&
+    existing.data !== null &&
+    (existing.data as { allowPlayerScores?: unknown }).allowPlayerScores === true;
+  if (!enabled) {
+    return json({ error: "feature_disabled" }, 403);
+  }
+
+  // Reject unknown matchups so the overlay can't be bloated with junk keys.
+  if (!hasMatchup(existing.data, body.matchupId)) {
+    return json({ error: "unknown_matchup" }, 400);
+  }
+
+  const record = await mergePlayerScore(env, body.id, body.matchupId, [
+    score[0],
+    score[1],
+  ]);
+  if (!record) {
+    return json({ error: "event_not_found" }, 404);
+  }
+
+  const stub = env.CHANNEL_HUB.get(env.CHANNEL_HUB.idFromName(record.channel));
+  const delivered = await stub.broadcast({
+    kind: "score.proposed",
+    matchupId: body.matchupId,
+    score: [score[0], score[1]],
+  });
+
+  return json({ ok: true, delivered });
 }

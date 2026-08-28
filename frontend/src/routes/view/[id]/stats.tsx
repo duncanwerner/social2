@@ -38,9 +38,12 @@ export default function ViewStats() {
   };
 
   const table = (): RankedStanding[] => {
-    const ev = live.event();
+    // Merged event so provisional player scores are reflected (and flagged).
+    const ev = live.mergedEvent();
     return ev ? rankStandings(computeStandings(ev), mode()) : [];
   };
+  // Any provisional (unconfirmed player-entered) scores in the table?
+  const anyProvisional = () => table().some((r) => r.provisional);
   // Any scores entered yet? (Otherwise everyone is on zero — show a hint.)
   const hasResults = () => table().some((r) => r.played > 0);
 
@@ -136,6 +139,14 @@ export default function ViewStats() {
                             </span>
                           )}
                         </Show>
+                        <Show when={r.provisional}>
+                          <span
+                            class="provisional-mark"
+                            aria-label="includes unconfirmed player-entered scores"
+                          >
+                            *
+                          </span>
+                        </Show>
                       </div>
                     </td>
                     <For each={columns()}>
@@ -155,6 +166,11 @@ export default function ViewStats() {
               ? "3 points for a win, 1 for a draw."
               : "Total games won and lost."}
           </p>
+          <Show when={anyProvisional()}>
+            <p class="hint standings-note">
+              * includes unconfirmed player-entered scores.
+            </p>
+          </Show>
         </section>
       </Show>
     </main>
