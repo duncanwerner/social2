@@ -137,6 +137,16 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
   `rounds.tsx` (live rounds), `stats.tsx` (league table). A finished status shows
   a "Finished" pill and opens no socket (the pill is derived from event status, not
   the transient socket state). Bad id → `ErrorView`.
+- **Link previews (`functions/view/[id].ts`).** A SPA can't give link-preview
+  crawlers (iMessage, Slack, Facebook, X) per-event Open Graph tags — they don't
+  run JS. A Cloudflare **Pages Function** intercepts `/view/:id` and, **for crawler
+  user-agents only**, fetches the record from the public backend and injects
+  `og:`/`twitter:` tags + the `<title>` via `HTMLRewriter`; humans get the untouched
+  SPA (no backend fetch). Ships inside the same `wrangler pages deploy` — no separate
+  Worker. Reads `BACKEND_URL` (Pages env var; falls back to the deployed Worker);
+  `.dev.vars` points it at a local backend for `npm run preview:pages` (the plain
+  Vite `npm run dev` does **not** run Functions). `npm run typecheck` also covers
+  `functions/` via `functions/tsconfig.json`. See `frontend/README.md`.
 - **Owner-on-view.** `get-event` returns `owner: true` for the owner's token, so the
   rounds page shows owner controls: **generate round** / **regenerate** the current
   unscored round (optimizer runs in a Web Worker — `round-worker.ts` wrapping
