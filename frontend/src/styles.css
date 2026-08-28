@@ -953,6 +953,19 @@ button.danger:disabled {
   user-select: none;
   white-space: nowrap;
 }
+/* Opt the checkbox out of the global full-width input box (width:100% + panel
+   background/border/padding), same as .field-check — otherwise WebKit (Safari,
+   Epiphany) renders it as a big padded, bordered box that fills the row and
+   shoves the label off-screen. */
+.filter-check input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+}
 .event-list {
   list-style: none;
   margin: 0;
