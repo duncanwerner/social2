@@ -1,25 +1,28 @@
 # Round generation — validation findings
 
 **Subject:** `NextRound` in [`src/social.ts`](src/social.ts) — the optimizer behind
-the rounds page's **+ Next round** / **Regenerate** buttons.
+the rounds page's **+ Next round** / **Regenerate** buttons, and the seeded fill
+behind **Edit round manually**.
 **Validator:** [`scripts/validate-rounds.ts`](scripts/validate-rounds.ts) — `npm run validate:rounds`.
 **Recorded:** commit `37916c2`, on a full-suite run with `--seed 1`.
+**Updated:** manual round editing — `NextRound` now takes an optional `RoundSeed`,
+and RG-1 is fixed (see below). `npm run validate:rounds` is green.
 
 This doc records what the validator found, what it deliberately verifies as *good*,
-and the quirks worth knowing before touching the generator. Nothing here is fixed
-yet — RG-1 and RG-2 are open.
+and the quirks worth knowing before touching the generator.
 
 ## TL;DR
 
 The generator's **distribution** is healthy: sit fairness, partner uniformity on the
-first round, repeat-avoidance and the whole-session behaviour all pass. But it has a
-**crash-class defect on inputs the UI can produce today**, and no UI guard prevents
-those inputs. `npm run validate:rounds` is red for that reason alone.
+first round, repeat-avoidance and the whole-session behaviour all pass. The one
+crash-class defect it found on inputs the UI can produce today (**RG-1**) is now
+fixed, and the manual-edit fill path it enabled is covered by a `seed` check. The
+suite exits 0.
 
 | ID | Severity | Status | Finding |
 |----|----------|--------|---------|
-| **RG-1** | High (crash / data corruption) | **open** | `NextRound` returns `undefined` when more than half the pool must sit, despite being typed `InstrumentedRound` |
-| **RG-2** | Medium (UX, feeds RG-1) | **open** | Nothing stops the user generating a round that cannot be played: the Sit checkboxes and court count have no minimum-players guard |
+| **RG-1** | High (crash / data corruption) | **fixed** | `NextRound` used to return `undefined` when more than half the pool must sit; it now falls back to the best candidate |
+| **RG-2** | Medium (UX, feeds RG-1) | **open** (narrowed) | Still nothing stops **+ Next round** from generating an all-sit round (10 players / 3 courts with 7 disabled). The crash is gone, but the round is still useless; the manual editor reports its own version of this |
 | **RG-3** | Low (misleading data) | **open** | The first-round fast path reports hard-coded zero metrics instead of measured ones |
 | **RG-4** | Low (testability) | **open** | The RNG is `() => Math.random()`, not injectable; the validator has to monkey-patch the global |
 | **RG-5** | Info (trap, not a bug) | — | Team hashes sort **lexicographically**, so `[2,10]` hashes as `"10,2"` — consistent, but surprising |
@@ -27,24 +30,28 @@ those inputs. `npm run validate:rounds` is red for that reason alone.
 
 ## How the generator decides
 
-`NextRound` samples `n` random candidate rounds (`RandomRound`: shuffle the pool,
-fill courts four at a time, the remainder sit), scores each one, then picks the best
-in two passes before returning the first survivor:
+`NextRound` samples `n` random candidate rounds (`RandomRound`: shuffle the pool, fill
+courts four at a time, the remainder sit), scores each one, then picks the best in two
+passes before returning the first survivor:
 
-1. **Keep the fewest over-sat players** (minimum `max_sitting_count`), and *discard
-   any candidate where a sitter also sat in the most recently played round*.
-2. Among those, minimise repeated teams, then maximise how long ago a repeated team
-   last played, then minimise repeated opponents.
+1. **Keep the fewest over-sat players** (minimum `max_sitting_count`), and *discard any
+   candidate where a sitter also sat in the most recently played round* — unless no such
+   candidate exists, in which case the best survivor of the first rule is used (see RG-1).
+2. Among those, minimise repeated teams, then maximise how long ago a repeated team last
+   played, then minimise repeated opponents.
 
-Pass 1 is where RG-1 lives.
+With a `RoundSeed`, `RandomRound` starts from the caller's court layout instead of a bare
+shuffle — committed courts are completed first, open courts get fresh games, and a court
+the pool cannot complete is dropped. Everything after that is unchanged, so the same two
+passes score seeded and unseeded candidates alike (see below).
 
 ## Reproducing
 
 ```bash
 cd frontend
-npm run validate:rounds                 # full suite (~16 s), exits 1 while RG-1 is open
+npm run validate:rounds                 # full suite (~16 s), exits 0 today
 npm run validate:rounds -- --quick      # ~9 s
-npm run validate:rounds -- --no-edge    # distribution checks only: exits 0 today
+npm run validate:rounds -- --no-edge    # distribution checks only
 npm run validate:rounds -- --verbose    # show detail lines for passing checks too
 npm run validate:rounds -- --json       # machine-readable report
 npm run validate:rounds -- --file ../lib/sample-event.json
@@ -54,24 +61,24 @@ npm run validate:rounds -- --file ../lib/sample-event.json
 
 ---
 
-## RG-1 — `NextRound` can return `undefined`
+## RG-1 — `NextRound` can return `undefined` (fixed)
 
-**Severity:** high. **Status:** open.
+**Severity:** high. **Status:** fixed. **Was:** open at `37916c2`.
 
-### What happens
+### What happened
 
-`filtered` is built only from candidates whose sitters avoid the most recently played
-round. When more than half the available pool must sit, **every** candidate round must
-re-seat someone who sat last time, so `filtered` ends up empty and `filtered[0]` is
+`filtered` was built only from candidates whose sitters avoid the most recently played
+round. When more than half the available pool must sit, **every** candidate round has to
+re-seat someone who sat last time, so `filtered` ended up empty and `filtered[0]` was
 `undefined` — even though the function is typed as returning `InstrumentedRound`.
 
 Precisely: let `n` = players available (pool minus `force_sitting`), `k` = how many of
 them must sit, and `R` = the players who sat in the previous round. A candidate is
 acceptable iff a `k`-subset disjoint from `R` exists, i.e. `n − |R| ≥ k`; once
-`k + |R| > n` no candidate survives. In the steady state `|R| = k`, so the trigger is
+`k + |R| > n` no candidate survives. In the steady state `|R| = k`, so the trigger was
 simply **`k > n/2` — more than half the pool sits**.
 
-### Evidence
+### Evidence (before the fix)
 
 Single court, varying pool size (20 calls each; verified):
 
@@ -88,12 +95,12 @@ Single court, varying pool size (20 calls each; verified):
 Also reproduced: 10 players / 3 courts with 7 forced to sit **and one of the three
 remaining players having sat in the previous round** → `undefined` 20/20. 3 players /
 1 court → `undefined` 25/25. 4 players / 0 courts with a history in which all four sat
-→ `undefined` 20/20. `n < 4` and `courts = 0` are just the `k = n` extreme.
+→ `undefined` 20/20.
 
 The validator carries two of these as permanent regression cases: *EDGE 10 players / 1
 court (6 must sit)* and *DEGENERATE 3 players / 1 court*.
 
-### Why it reaches users
+### Why it reached users
 
 Both triggers are reachable from the UI:
 
@@ -103,73 +110,100 @@ Both triggers are reachable from the UI:
   `src/round-worker.ts`. Disabling players until 3 remain is a normal thing to do when
   people drift away.
 
-The **+ Next round** button is guarded only by `generating() || !isLastRound()`
-(`src/routes/view/[id]/rounds.tsx:440`) — there is no check on active players or court
-count.
+It also made the manual-edit fill path unsafe: a seed that commits players to courts
+shrinks the pool the "nobody sits twice" filter can work with, so the empty-`filtered`
+case is easy to hit with a hand-built layout.
 
-### Impact
+### Fix applied
 
-`src/social-worker.ts` pushes the result straight into its accumulator:
+Pass 1 now keeps the min-`max_sitting_count` set (`acceptable`) and computes the
+back-to-back-sit filter over it; if that filter yields nothing, pass 2 sorts and returns
+the best of `acceptable` instead of dereferencing an empty array:
 
 ```ts
-const round = NextRound(data.players, data.courts, rounds, data.options);
-rounds.push(round);   // may push undefined
+const filtered = acceptable.filter(r => r.min_sitting_delta === -1 || r.min_sitting_delta > 0);
+const candidates = filtered.length ? filtered : acceptable;
 ```
 
-The array is posted back to the main thread, and `generate()` saves it as
-`record.data.rounds`. `JSON.stringify` turns the hole into `null`, so the record
-**persists a null round**. Downstream, `.matchups` is dereferenced without a guard in
-at least two places:
+This is exactly the "unless absolutely necessary" intent the original comment stated. It
+only changes behaviour on inputs where no legal alternative exists, so every distribution
+baseline below is unchanged; the EDGE/DEGENERATE samples now return a legal round rather
+than `undefined`, and `structure` / `robustness` pass for all 16 samples.
 
-- `src/standings.ts:59` — `for (const m of round.matchups)` ⇒ the **Stats tab throws**.
-- `src/routes/view/[id]/rounds.tsx:169` — `r.matchups.map(...)` in
-  `eventWithDraftScores()`, which runs on generate/regenerate/save-scores whenever the
-  null round is the viewed one.
+`qualityFinding` in the validator gained the matching exemption: the back-to-back-sit
+rule is asserted only when `n − |R| ≥ k`, i.e. when a round that avoids it actually
+exists. Otherwise it says so in the details rather than failing the input.
 
-(A runtime error in a Solid render is exactly the failure mode the root `CLAUDE.md`
-warns blanks the screen, so this is worth taking seriously rather than filing as
-cosmetic.)
+### Still open: RG-2
 
-### Suggested fix (not applied)
+With RG-1 fixed, the crash is gone, but the **+ Next round** button can still produce an
+all-sit round (10 players / 3 courts with 7 disabled). Nothing guards that yet.
 
-The pass-1 comment already states the intent — *"we also don't want anyone sitting
-twice in a row, **unless absolutely necessary**"* — but the code treats it as a hard
-filter. Two options:
+---
 
-1. **Fallback (minimal, matches the stated intent):** if the strict filter yields
-   nothing, fall back to the best candidate that only violates the back-to-back rule,
-   e.g. keep pass-1's `max_sitting_count` ordering and take `rounds[0]` when `filtered`
-   is empty. The generator then always returns a legal round, and a repeat sit happens
-   only when it is genuinely unavoidable.
-2. **Make the contract honest:** return `InstrumentedRound | undefined` and handle it
-   at the worker boundary — but that only relocates the problem unless paired with
-   option 1 or a guard in RG-2.
+## Manual round editing — `RoundSeed`
 
-Whoever fixes it should also decide the intended behaviour for a pool that cannot fill
-a single court (`n < 4`, or `courts = 0`), which today yields an all-sit round (see
-RG-2).
+**Since:** the **Edit round manually** control on the rounds page (owner-only, newest
+unscored round). **Validated by:** the `seed` check.
+
+The optimistic path (RG-2) leaves the owner with a bad automatic round; the manual path
+lets them fix it. The owner assigns players to court slots, and any slot they leave open
+is filled by the optimizer:
+
+```ts
+export interface RoundSeed {
+  matchups: PartialMatchup[];   // positional: matchups[i] is court i, slots may be null
+}
+
+NextRound(players, courts, previous_rounds, options, seed?)
+```
+
+Contract, in the order the code applies it:
+
+1. **The roster wins.** A seeded player who is absent, unknown, or forced to sit (the
+   Sit checkbox) is cleared from their slot before anything else — a manual pick can't
+   override `force_sitting`. A player seeded into two courts is kept only in the first.
+2. **Seeded players leave the pool**, so the filler can never give them a second game or
+   move them.
+3. **Courts are positional.** `matchups[i]` describes court `i`, and an all-empty entry
+   is a court the caller left open. The editor always passes one entry per configured
+   court, which is what lets it put a completed matchup back on the court number the
+   owner assigned.
+4. **Committed courts are completed first** (most fixed players first), so a half-filled
+   court can't be starved by an empty court listed above it. Ties keep court order.
+5. **A court the remaining pool cannot complete is dropped**, and whoever was assigned
+   to it sits. The editor detects this and tells the owner which courts were affected.
+   New games are only created on courts the caller left open, and only while a full four
+   remains.
+
+The `seed` check in `validate-rounds.ts` pins this down over five scenarios (a complete
+court kept together, two half-courts completed in place, a starved court dropped, the
+RG-1 input with a seeded court, and a malformed seed with repeated slots). Each fill is
+asserted to be a legal partition of the pool with the seeded players exactly where they
+were put, the caller's seed unchanged, and `undefined` never returned.
 
 ---
 
 ## RG-2 — nothing guards an unplayable round
 
-**Severity:** medium. **Status:** open. **Related:** RG-1.
+**Severity:** medium. **Status:** open (narrowed by the RG-1 fix). **Related:** RG-1.
 
 With 10 players / 3 courts and 7 disabled, generation *succeeds* but returns a round
 in which **all ten players sit and no court is filled**. The validator reports this as
 `diversity: no courts could be filled (every player sits), so there is nothing to
 vary` — a legal round, just a useless one.
 
-So there are two outcomes for the same class of input, depending on history:
+Before the RG-1 fix there were two outcomes for the same class of input, depending on
+history: `undefined` if any of the remaining players sat in the previous round, an
+all-sit round otherwise. Only the second remains — the crash is gone, the useless round
+is not.
 
-- if any of the remaining players sat in the previous round → `undefined` (RG-1);
-- otherwise → an all-sit round that still gets persisted and broadcast to viewers.
-
-Neither is what a user pressing **+ Next round** wants. A guard would fix both: disable
-the button (with an explanatory message) when no court can be filled, or when the
-resulting sit load exceeds half the pool. With
+A guard would fix it: disable the button (with an explanatory message) when no court can
+be filled, or when the resulting sit load exceeds half the pool. With
 `active` = active players and `fours = min(floor(active / 4), courts)`, that is
-`fours < 1`, or `active − 4 × fours > active / 2` (the RG-1 trigger).
+`fours < 1`, or `active − 4 × fours > active / 2`. The manual editor already refuses to
+open for an event with no courts, and its **Fill remaining** reports any court it could
+not complete — but **+ Next round** still has no equivalent check.
 
 ## RG-3 — the first-round fast path reports fake metrics
 
@@ -270,6 +304,10 @@ part that makes a future regression visible, so please keep them green.
   rounds, so a repeated answer there is correct behaviour rather than a stuck RNG.
 - **Generation does not mutate its inputs.** The caller's history array is unchanged
   after each call (checked per trial).
+- **Seeded fills honour the manual assignment.** Across five scenarios (400 fills on a
+  default run) every seeded player ends up exactly where the owner put them or sitting
+  (if their court could not be completed), the result is a legal partition of the pool,
+  and the caller's seed is unchanged.
 
 Measured numbers depend on seed and machine; the assertions do not. `--seed 1` is the
 default so a re-run reproduces the table above.
@@ -281,9 +319,15 @@ default so a re-run reproduces the table above.
 | `structure` | per-round invariants + an **independent re-implementation** of the metric counting (`measure()`), written from the spec rather than copied, so drift between what the optimizer reports and the round it returns is caught. Verified live by deliberately perturbing it. |
 | `robustness` | counts `undefined` returns; a hard failure on inputs the UI can reach, a warning on inputs where no legal round exists. |
 | `shuffle` | with no history, each player's partner is uniform over the pool, so a per-player χ² (df = pool − 2, α = 0.0001 Bonferroni-corrected, Wilson–Hilferty critical value) detects a biased shuffle. |
-| `quality` | with history, asserts `min_sitting_delta === 0` never happens and that `max_sitting_count` / `max_repeat_teams` hit the best observed value in ≥ 95 % of trials. |
+| `quality` | with history, asserts `min_sitting_delta === 0` never happens (except where no such round exists) and that `max_sitting_count` / `max_repeat_teams` hit the best observed value in ≥ 95 % of trials. |
 | `session` | generates a whole social round by round from an empty history, then asserts sit spread ≤ 1, zero back-to-back sits, and fewer repeat-team slots than a naive shuffle scheduler averaged over 25 runs. Cumulative spread including the sample's own history is reported but not asserted, since the optimizer can only reduce inherited imbalance. |
 | `diversity` | distinct canonical rounds (partner pairs + sitting set), Shannon entropy, commonest-answer count. Fails outright on a single repeated answer; warns on hard clustering. |
+| `seed` | fills a `RoundSeed` and asserts the manual round-editing contract: seeded players stay in their slots (or sit if their court is dropped), no duplicates, every active player accounted for exactly once, fresh scores/ids, `force_sitting` honoured, and the caller's seed not mutated. |
+
+The `quality` rule is asserted only when a round avoiding a back-to-back sit actually
+exists: with `n` active players, `k` of them sitting and `|R|` of them having sat last
+round, that means `n − |R| ≥ k`. RG-1's fallback otherwise has no choice but to re-seat
+someone, so failing the input would be wrong.
 
 Two deliberate semantics worth remembering: sessions start from an **empty** history
 (so the fairness assertion is clean), and `force_sitting` players are excluded from both

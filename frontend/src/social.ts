@@ -39,6 +39,26 @@ export interface Round {
   force_sitting?: PlayerID[];
 }
 
+/** a team slot that may still be empty while a round is being edited */
+export type PartialTeam = [PlayerID | null, PlayerID | null];
+
+/** a matchup under construction: any of its four slots may be empty */
+export interface PartialMatchup {
+  A: PartialTeam;
+  B: PartialTeam;
+}
+
+/**
+ * A partially assigned round, used to fill a manually edited round. `matchups`
+ * is positional — `matchups[i]` describes court `i`, and an all-empty entry is a
+ * court the caller left open. Seeded courts are completed from the pool first;
+ * a court the remaining pool cannot complete is dropped, and whoever was
+ * assigned to it sits this round. See `NextRound`.
+ */
+export interface RoundSeed {
+  matchups: PartialMatchup[];
+}
+
 export type InstrumentedRound = Round & { 
   max_sitting_count: number;
   min_sitting_delta: number;
@@ -107,29 +127,73 @@ const KnuthShuffle = <T>(values: T[]) => {
 
 }
 
+/** the four slots of a (possibly partial) matchup, in A0, A1, B0, B1 order */
+const SeedSlots = (matchup: PartialMatchup): (PlayerID | null)[] => [
+  matchup.A[0], matchup.A[1], matchup.B[0], matchup.B[1],
+];
+
+/** how many of a partial matchup's four slots are already assigned */
+const SeedFixedCount = (matchup: PartialMatchup): number =>
+  SeedSlots(matchup).filter((player) => player !== null).length;
+
+/** the players already assigned to a partial matchup */
+const SeedPlayers = (matchup: PartialMatchup): PlayerID[] =>
+  SeedSlots(matchup).filter((player): player is PlayerID => player !== null);
+
 /**
- * generate a random round, purely stochastic
+ * generate a random round, purely stochastic.
+ *
+ * with a `seed`, the courts the caller has already committed to are honoured:
+ * their fixed players stay in their slots, their open slots are drawn from the
+ * pool in shuffle order, and any other court is filled fresh. courts the seed
+ * cannot complete (not enough players left) are dropped, and whoever was
+ * assigned to them sits — see RoundSeed.
  */
-const RandomRound = (players: PlayerID[], courts: number): Round => {
+const RandomRound = (players: PlayerID[], courts: number, seed?: RoundSeed): Round => {
 
   const shuffled = KnuthShuffle(players);
-  const count = shuffled.length;
+  let index = 0;
+  const take = (): PlayerID => shuffled[index++];
+
+  // The positional court layout: the seed's courts, then a fresh (all-empty)
+  // entry for every court the seed didn't describe. Keeping a slot per court is
+  // what lets the filler report back against the caller's court numbering.
+  const layout: PartialMatchup[] = [];
+  for (let i = 0; i < Math.max(0, courts); i++) {
+    layout.push(seed?.matchups[i] ?? { A: [null, null], B: [null, null] });
+  }
+
+  // Complete the most-committed courts first, so a court the owner has already
+  // half-filled can't be starved by an open court listed above it.
+  const order = layout
+    .map((_, i) => i)
+    .sort((a, b) => SeedFixedCount(layout[b]) - SeedFixedCount(layout[a]));
 
   const round: Round = {
     matchups: [],
     sitting: [],
   };
+  const built: (Matchup | null)[] = new Array(layout.length).fill(null);
 
-  const fours = Math.min(Math.floor(count / 4), courts);
+  for (const i of order) {
 
-  let index = 0;
-  for (let i = 0; i < fours; i++) {
-    const A: Team = [shuffled[index++], shuffled[index++]];
-    const B: Team = [shuffled[index++], shuffled[index++]];
-    round.matchups.push({id: crypto.randomUUID(), A, B, score: [-1, -1]});
+    const entry = layout[i];
+    const open = 4 - SeedFixedCount(entry);
+
+    if (players.length - index < open) {
+      // Not enough players left to complete this court. An open court is simply
+      // unused; anyone the caller assigned to it sits this round.
+      round.sitting.push(...SeedPlayers(entry));
+      continue;
+    }
+
+    const A: Team = [entry.A[0] ?? take(), entry.A[1] ?? take()];
+    const B: Team = [entry.B[0] ?? take(), entry.B[1] ?? take()];
+    built[i] = {id: crypto.randomUUID(), A, B, score: [-1, -1]};
   }
 
-  for (; index < count; index++) {
+  for (const matchup of built) if (matchup) round.matchups.push(matchup);
+  for (; index < shuffled.length; index++) {
     round.sitting.push(shuffled[index]);
   }
 
@@ -138,10 +202,10 @@ const RandomRound = (players: PlayerID[], courts: number): Round => {
 }
 
 /** generate n rounds at once */
-const RandomRounds = (count: number, players: PlayerID[], courts: number): Round[] => {
+const RandomRounds = (count: number, players: PlayerID[], courts: number, seed?: RoundSeed): Round[] => {
   const rounds: Round[] = [];
   for (let i = 0; i < count; i++) {
-    rounds.push(RandomRound(players, courts));
+    rounds.push(RandomRound(players, courts, seed));
   }
   return rounds;
 }
@@ -155,8 +219,12 @@ const RandomRounds = (count: number, players: PlayerID[], courts: number): Round
  * @param courts - the number of courts. we need this information to figure
  * out how many players play/sit. assume 4 per court.
  * @param options - 
+ * @param seed - optionally, a partially assigned round to work around. the
+ * seeded players keep their slot, are taken out of the pool, and the optimizer
+ * only decides the open slots and courts. this is how a manually edited round
+ * is filled (see RoundSeed).
  */
-export const NextRound = (players: PlayerID[], courts: number, previous_rounds: Round[] = [], options: Partial<Options> = {}): InstrumentedRound => {
+export const NextRound = (players: PlayerID[], courts: number, previous_rounds: Round[] = [], options: Partial<Options> = {}, seed?: RoundSeed): InstrumentedRound => {
 
   // force sitting: rmove player(s) from the pool, then 
   // add them back at the end
@@ -172,12 +240,37 @@ export const NextRound = (players: PlayerID[], courts: number, previous_rounds: 
     });
   }
 
+  // resolve a manual seed against what's actually available. a seeded player who
+  // is sitting this round (the Sit checkbox beats a manual pick) or who isn't in
+  // the roster is cleared from their slot, and a player seeded into two courts
+  // only keeps the first. the surviving seeded players then leave the pool, so
+  // the random filler can't hand them a second game. slots stay positional: an
+  // empty court remains in the layout so court numbering survives the fill.
+
+  let resolved_seed: RoundSeed | undefined;
+  if (seed) {
+    const active = new Set(players);
+    const taken = new Set<PlayerID>();
+    const keep = (player: PlayerID | null): PlayerID | null => {
+      if (player === null || !active.has(player) || taken.has(player)) return null;
+      taken.add(player);
+      return player;
+    };
+    resolved_seed = {
+      matchups: seed.matchups.map((matchup) => ({
+        A: [keep(matchup.A[0]), keep(matchup.A[1])] as PartialTeam,
+        B: [keep(matchup.B[0]), keep(matchup.B[1])] as PartialTeam,
+      })),
+    };
+    players = players.filter(player => !taken.has(player));
+  }
+
   // shortcut: if this is the first round, just return something randomly
   // why not return just the list of players in order? kind of fairness,
   // in the event someone has to sit; although I recognize this is arbitrary
 
   if (!previous_rounds.length) {
-    const round = RandomRound(players, courts);
+    const round = RandomRound(players, courts, resolved_seed);
     round.sitting.push(...restore_players);
     return {
       ...round,
@@ -338,7 +431,7 @@ export const NextRound = (players: PlayerID[], courts: number, previous_rounds: 
   // 16 -> 5000
 
   const n = 2500 + Math.max(0, players.length - 12) * 2000;
-  const rounds = RandomRounds(n, players, courts).map(instrument);
+  const rounds = RandomRounds(n, players, courts, resolved_seed).map(instrument);
 
   // pass 1: no one should sit more than anyone else, if at all possible.
   // that means that we want to minimize the max sitting count. we also 
@@ -353,15 +446,23 @@ export const NextRound = (players: PlayerID[], courts: number, previous_rounds: 
   // exclude anything where min sitting delta = 0.
 
   const target_msc = rounds[0].max_sitting_count;
-  const filtered: InstrumentedRound[] = [];
+  const acceptable: InstrumentedRound[] = [];
   for (const round of rounds) {
     if (round.max_sitting_count > target_msc) {
       break;
     }
-    if (round.min_sitting_delta === -1 || round.min_sitting_delta > 0) {
-      filtered.push(round);
-    }
+    acceptable.push(round);
   }
+
+  // "nobody sits twice in a row" is a filter, not a rule: when more than half
+  // the pool (or a seeded layout) forces it, every candidate re-seats someone
+  // and this set is empty. fall back to the acceptable set so the optimizer
+  // always returns a round instead of `undefined` (RG-1); pass 2 still picks
+  // the best of what's left.
+  const filtered = acceptable.filter(
+    round => round.min_sitting_delta === -1 || round.min_sitting_delta > 0,
+  );
+  const candidates = filtered.length ? filtered : acceptable;
 
   // pass 2: minimize repeated teams and repeated opponents, in that order.
   // UPDATE: maximize sitting delta first? 
@@ -369,7 +470,7 @@ export const NextRound = (players: PlayerID[], courts: number, previous_rounds: 
   // UPDATE: maximize the "repeat team delta"? before or after the MRT?
 
   if (options.maximize_sitting_distance) {
-    filtered.sort((a, b) => {
+    candidates.sort((a, b) => {
       return (b.min_sitting_delta - a.min_sitting_delta) || 
              (a.max_repeat_teams - b.max_repeat_teams) || 
              (b.min_repeat_team_delta - a.min_repeat_team_delta) ||
@@ -377,13 +478,13 @@ export const NextRound = (players: PlayerID[], courts: number, previous_rounds: 
     });
   }
   else {
-    filtered.sort((a, b) => {
+    candidates.sort((a, b) => {
       return (a.max_repeat_teams - b.max_repeat_teams) || 
              (b.min_repeat_team_delta - a.min_repeat_team_delta) ||
              (a.max_repeat_opponents - b.max_repeat_opponents);
     });
   }
     
-  return filtered[0];
+  return candidates[0];
 
 };

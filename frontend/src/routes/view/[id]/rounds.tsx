@@ -2,9 +2,10 @@ import { createEffect, createSignal, onCleanup, untrack } from "solid-js";
 import { For, Show } from "@solidjs/web";
 import { useViewLive } from "../../../view-live";
 import { generateRounds } from "../../../round-worker";
+import { RoundEditor } from "../../../components/RoundEditor";
 import { isFinished } from "../../../event-status";
 import { ApiError } from "../../../api-error";
-import type { Matchup, PlayerID, Team } from "../../../social";
+import type { Matchup, PlayerID, Round, Team } from "../../../social";
 
 // /view/:id/rounds — the live round display. Players read; the owner (signed in)
 // generates rounds and enters scores here — one page for both.
@@ -27,6 +28,8 @@ export default function ViewRounds() {
   const [generating, setGenerating] = createSignal(false);
   const [savingScores, setSavingScores] = createSignal(false);
   const [submitting, setSubmitting] = createSignal<number | null>(null);
+  // True while the owner is manually assigning the newest round's courts.
+  const [editing, setEditing] = createSignal(false);
   // Matchup indices showing a transient "Submitted ✓" confirmation (player path).
   const [submitted, setSubmitted] = createSignal<Set<number>>(new Set());
   // Cells ("m:side") the owner/player has hand-edited since the round was seeded;
@@ -218,6 +221,25 @@ export default function ViewRounds() {
     }
   }
 
+  // Manual editing targets the same round Regenerate does: the newest, unscored
+  // one. History is never editable, and a played round's scores are never
+  // disturbed. A court-less event has nothing to assign.
+  const canEditRound = () =>
+    canRegenerate() && (live.event()?.courts.length ?? 0) > 0;
+
+  // Replace the edited round in place and persist (which broadcasts to viewers).
+  // Rejects on failure so the editor can show the message and stay open.
+  async function saveEditedRound(edited: Round) {
+    const ev = live.event();
+    if (!ev?.rounds) throw new Error("the event is no longer available");
+    const idx = viewIdx();
+    await live.save({
+      ...ev,
+      rounds: ev.rounds.map((r, i) => (i === idx ? edited : r)),
+    });
+    setEditing(false);
+  }
+
   async function saveScores() {
     const next = eventWithDraftScores();
     if (!next || savingScores()) return;
@@ -286,163 +308,200 @@ export default function ViewRounds() {
           </section>
         }
       >
-        <header class="rounds-head">
-          <button
-            class="link"
-            type="button"
-            disabled={viewIdx() === 0}
-            onClick={() => setViewIdx((i) => Math.max(0, i - 1))}
-          >
-            ‹ Prev
-          </button>
-          <span class="rounds-title">
-            Round {viewIdx() + 1} of {rounds().length}
-          </span>
-          <button
-            class="link"
-            type="button"
-            disabled={viewIdx() >= rounds().length - 1}
-            onClick={() =>
-              setViewIdx((i) => Math.min(rounds().length - 1, i + 1))
-            }
-          >
-            Next ›
-          </button>
-        </header>
+        <Show
+          when={editing() ? round() : undefined}
+          fallback={
+            <>
+              <header class="rounds-head">
+                <button
+                  class="link"
+                  type="button"
+                  disabled={viewIdx() === 0}
+                  onClick={() => setViewIdx((i) => Math.max(0, i - 1))}
+                >
+                  ‹ Prev
+                </button>
+                <span class="rounds-title">
+                  Round {viewIdx() + 1} of {rounds().length}
+                </span>
+                <button
+                  class="link"
+                  type="button"
+                  disabled={viewIdx() >= rounds().length - 1}
+                  onClick={() =>
+                    setViewIdx((i) => Math.min(rounds().length - 1, i + 1))
+                  }
+                >
+                  Next ›
+                </button>
+              </header>
 
-        <For each={round()?.matchups ?? []}>
-          {(m, i) => {
-            // A cell is editable for the owner, or for a player when the owner
-            // hasn't already scored this matchup.
-            const editable = () => canManage() || (canPlayerScore() && !ownerScored(i()));
-            const inputClass = (side: 0 | 1) =>
-              canManage()
-                ? isDirty(i(), side)
-                  ? "score-input dirty"
-                  : "score-input"
-                : isProvisional(m)
-                  ? "score-input provisional"
-                  : "score-input";
-            const cell = (side: 0 | 1) => (
-              <Show
-                when={editable()}
-                fallback={
-                  <span class={isProvisional(m) ? "score provisional" : "score"}>
-                    {scoreLabel(displayScore(m, side))}
-                  </span>
-                }
-              >
-                <input
-                  class={inputClass(side)}
-                  type="number"
-                  inputmode="numeric"
-                  min="0"
-                  value={draftVal(i(), side)}
-                  onInput={(e) => setScore(i(), side, e.currentTarget.value)}
-                />
+              <For each={round()?.matchups ?? []}>
+                {(m, i) => {
+                  // A cell is editable for the owner, or for a player when the owner
+                  // hasn't already scored this matchup.
+                  const editable = () => canManage() || (canPlayerScore() && !ownerScored(i()));
+                  const inputClass = (side: 0 | 1) =>
+                    canManage()
+                      ? isDirty(i(), side)
+                        ? "score-input dirty"
+                        : "score-input"
+                      : isProvisional(m)
+                        ? "score-input provisional"
+                        : "score-input";
+                  const cell = (side: 0 | 1) => (
+                    <Show
+                      when={editable()}
+                      fallback={
+                        <span class={isProvisional(m) ? "score provisional" : "score"}>
+                          {scoreLabel(displayScore(m, side))}
+                        </span>
+                      }
+                    >
+                      <input
+                        class={inputClass(side)}
+                        type="number"
+                        inputmode="numeric"
+                        min="0"
+                        value={draftVal(i(), side)}
+                        onInput={(e) => setScore(i(), side, e.currentTarget.value)}
+                      />
+                    </Show>
+                  );
+                  return (
+                    <section class="card matchup">
+                      <div class="court-label">{courtName(i())}</div>
+                      <div class="team-row">
+                        <span class={winner(m) === 0 ? "team win" : "team"}>
+                          {teamName(m.A)}
+                        </span>
+                        {cell(0)}
+                      </div>
+                      <div class="vs">vs</div>
+                      <div class="team-row">
+                        <span class={winner(m) === 1 ? "team win" : "team"}>
+                          {teamName(m.B)}
+                        </span>
+                        {cell(1)}
+                      </div>
+                      <Show when={canPlayerScore() && !ownerScored(i())}>
+                        <button
+                          class={
+                            submitted().has(i())
+                              ? "secondary submit-score"
+                              : "primary submit-score"
+                          }
+                          type="button"
+                          disabled={
+                            submitting() === i() ||
+                            submitted().has(i()) ||
+                            draftVal(i(), 0) === "" ||
+                            draftVal(i(), 1) === ""
+                          }
+                          onClick={(e) => {
+                            // iOS Safari freezes scrolling in the overflow container
+                            // when the just-tapped button becomes disabled while it
+                            // still holds focus — it unsticks only when the button
+                            // re-enables. Drop focus before the submit disables it.
+                            e.currentTarget.blur();
+                            void submitOne(i());
+                          }}
+                        >
+                          {submitting() === i()
+                            ? "Submitting…"
+                            : submitted().has(i())
+                              ? "Submitted ✓"
+                              : "Submit score"}
+                        </button>
+                      </Show>
+                    </section>
+                  );
+                }}
+              </For>
+
+              <Show when={(round()?.sitting?.length ?? 0) > 0}>
+                <section class="card sitting">
+                  <span class="info-label">Sitting</span>
+                  <span>{round()!.sitting.map(nameOf).join(", ")}</span>
+                </section>
               </Show>
-            );
-            return (
-              <section class="card matchup">
-                <div class="court-label">{courtName(i())}</div>
-                <div class="team-row">
-                  <span class={winner(m) === 0 ? "team win" : "team"}>
-                    {teamName(m.A)}
-                  </span>
-                  {cell(0)}
-                </div>
-                <div class="vs">vs</div>
-                <div class="team-row">
-                  <span class={winner(m) === 1 ? "team win" : "team"}>
-                    {teamName(m.B)}
-                  </span>
-                  {cell(1)}
-                </div>
-                <Show when={canPlayerScore() && !ownerScored(i())}>
+
+              <Show when={error()}>
+                <p class="err-inline">{error()}</p>
+              </Show>
+
+              {/* Owner-only, and only on the newest unscored round: history is
+                  never editable. Kept out of the action row below so its two
+                  buttons still fit on a phone. */}
+              <Show when={canEditRound()}>
+                <div class="rounds-edit-bar">
                   <button
-                    class={
-                      submitted().has(i())
-                        ? "secondary submit-score"
-                        : "primary submit-score"
-                    }
+                    class="link"
                     type="button"
-                    disabled={
-                      submitting() === i() ||
-                      submitted().has(i()) ||
-                      draftVal(i(), 0) === "" ||
-                      draftVal(i(), 1) === ""
-                    }
-                    onClick={(e) => {
-                      // iOS Safari freezes scrolling in the overflow container
-                      // when the just-tapped button becomes disabled while it
-                      // still holds focus — it unsticks only when the button
-                      // re-enables. Drop focus before the submit disables it.
-                      e.currentTarget.blur();
-                      void submitOne(i());
+                    disabled={generating()}
+                    onClick={() => {
+                      setError("");
+                      setEditing(true);
                     }}
                   >
-                    {submitting() === i()
-                      ? "Submitting…"
-                      : submitted().has(i())
-                        ? "Submitted ✓"
-                        : "Submit score"}
+                    ✎ Edit round manually
                   </button>
-                </Show>
-              </section>
-            );
-          }}
-        </For>
+                </div>
+              </Show>
 
-        <Show when={(round()?.sitting?.length ?? 0) > 0}>
-          <section class="card sitting">
-            <span class="info-label">Sitting</span>
-            <span>{round()!.sitting.map(nameOf).join(", ")}</span>
-          </section>
-        </Show>
-
-        <Show when={error()}>
-          <p class="err-inline">{error()}</p>
-        </Show>
-
-        <Show when={canManage()}>
-          <div class="rounds-actions">
-            {/* On a fresh, unscored round the score save is a no-op, so Regenerate
-                takes that slot — keeping the row to two buttons that never wrap. */}
-            <Show
-              when={canRegenerate()}
-              fallback={
-                <button
-                  class={dirty() ? "primary" : "secondary"}
-                  type="button"
-                  disabled={!dirty() || savingScores()}
-                  onClick={saveScores}
-                >
-                  {savingScores()
-                    ? "Saving…"
-                    : dirty()
-                      ? "Save scores"
-                      : "Scores saved"}
-                </button>
-              }
-            >
-              <button
-                class="secondary"
-                type="button"
-                disabled={generating()}
-                onClick={regenerate}
-              >
-                {generating() ? "Regenerating…" : "Regenerate"}
-              </button>
-            </Show>
-            <button
-              class="primary"
-              type="button"
-              disabled={generating() || !isLastRound()}
-              onClick={generate}
-            >
-              {generating() ? "Generating…" : "+ Next round"}
-            </button>
-          </div>
+              <Show when={canManage()}>
+                <div class="rounds-actions">
+                  {/* On a fresh, unscored round the score save is a no-op, so Regenerate
+                      takes that slot — keeping the row to two buttons that never wrap. */}
+                  <Show
+                    when={canRegenerate()}
+                    fallback={
+                      <button
+                        class={dirty() ? "primary" : "secondary"}
+                        type="button"
+                        disabled={!dirty() || savingScores()}
+                        onClick={saveScores}
+                      >
+                        {savingScores()
+                          ? "Saving…"
+                          : dirty()
+                            ? "Save scores"
+                            : "Scores saved"}
+                      </button>
+                    }
+                  >
+                    <button
+                      class="secondary"
+                      type="button"
+                      disabled={generating()}
+                      onClick={regenerate}
+                    >
+                      {generating() ? "Regenerating…" : "Regenerate"}
+                    </button>
+                  </Show>
+                  <button
+                    class="primary"
+                    type="button"
+                    disabled={generating() || !isLastRound()}
+                    onClick={generate}
+                  >
+                    {generating() ? "Generating…" : "+ Next round"}
+                  </button>
+                </div>
+              </Show>
+            </>
+          }
+        >
+          {(r) => (
+            <RoundEditor
+              event={live.event()!}
+              history={rounds().slice(0, viewIdx())}
+              round={r()}
+              index={viewIdx()}
+              onCancel={() => setEditing(false)}
+              onSave={saveEditedRound}
+            />
+          )}
         </Show>
       </Show>
     </main>

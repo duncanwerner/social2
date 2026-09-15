@@ -31,6 +31,10 @@
  *               schedule must beat a purely random scheduler on repeats.
  *   diversity   results must actually vary between calls (no degenerate
  *               collapse onto a single answer).
+ *   seed        filling a manually edited round (RoundSeed): the seeded players
+ *               keep their court, the open slots are completed, a court that
+ *               cannot be completed is dropped rather than crashing, and every
+ *               active player is accounted for exactly once.
  *
  * Usage:
  *   npm run validate:rounds
@@ -42,7 +46,14 @@
  */
 
 import { CreatePlayerID, NextRound } from "../src/social.ts";
-import type { InstrumentedRound, Options, PlayerID, Round } from "../src/social.ts";
+import type {
+  InstrumentedRound,
+  Options,
+  PartialMatchup,
+  PlayerID,
+  Round,
+  RoundSeed,
+} from "../src/social.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -801,7 +812,22 @@ const qualityFinding = (sample: Sample, trials: TrialRun): Finding => {
 
   // Nobody should sit twice in a row while any acceptable alternative exists.
   const backToBack = trials.rounds.filter((r) => r.min_sitting_delta === 0).length;
-  const sitters = expectationsFor(sample).sitting;
+  const expected = expectationsFor(sample);
+  const sitters = expected.sitting;
+
+  // ...but sometimes no alternative exists. Let n be the active pool, k the
+  // players who must sit this round, and R the active players who sat last
+  // round: a k-subset disjoint from R exists only while n - |R| >= k. RG-1's
+  // fallback deliberately re-seats someone in that case (it is the only legal
+  // round), so the rule is asserted only when it was actually satisfiable.
+  const active = expected.available;
+  const activeSitters = expected.sitting - expected.forced.length;
+  const lastSitters = sample.history.length
+    ? (sample.history[sample.history.length - 1].sitting ?? []).filter((p) =>
+        active.includes(p),
+      )
+    : [];
+  const backToBackAvoidable = active.length - lastSitters.length >= activeSitters;
 
   // The optimizer claims to minimize max sitting count and repeat teams: those
   // should be pinned to the best value seen across trials, not scattered.
@@ -819,9 +845,15 @@ const qualityFinding = (sample: Sample, trials: TrialRun): Finding => {
       `(spread ${Math.max(...trials.rounds.map((r) => r.max_repeat_teams)) - mrtBest})`,
   );
   if (sitters > 0) details.push(`sitting twice in a row: ${backToBack}/${trials.rounds.length} rounds`);
+  if (!backToBackAvoidable) {
+    details.push(
+      `no round can avoid re-seating a sitter (pool ${active.length}, ` +
+        `${activeSitters} must sit, ${lastSitters.length} sat last round): not asserted`,
+    );
+  }
 
   const problems: string[] = [];
-  if (sitters > 0 && backToBack > 0) {
+  if (backToBackAvoidable && sitters > 0 && backToBack > 0) {
     problems.push(`${backToBack}/${trials.rounds.length} rounds sit someone who sat the round before`);
   }
   if (mscAtBest / trials.rounds.length < 0.95) {
@@ -946,6 +978,287 @@ const diversityFinding = (trials: TrialRun, trialsRequested: number): Finding =>
     );
   }
   return finding("diversity", "pass", summary);
+};
+
+// ---------------------------------------------------------------------------
+// Seeded fill — the manual "edit round" path (RoundSeed)
+// ---------------------------------------------------------------------------
+//
+// The editor hands `NextRound` a layout with some slots already filled and lets
+// it complete the rest. These scenarios pin down that contract: manual picks are
+// never moved or duplicated, a court that cannot be completed is dropped (its
+// players sit) rather than producing a partial or missing round, and the result
+// is still a legal partition of the pool.
+
+interface SeedScenario {
+  label: string;
+  players: PlayerID[];
+  courts: number;
+  history: Round[];
+  options: Partial<Options>;
+  seed: RoundSeed;
+  /** court indices whose seeded lineup must survive untouched */
+  pinned: number[];
+  /** court indices that cannot be completed: their players must sit instead */
+  dropped: number[];
+  /** expected matchup count in the filled round */
+  matchups: number;
+}
+
+/** One court's four slots, A0 A1 B0 B1. */
+type CourtPlan = [PlayerID | null, PlayerID | null, PlayerID | null, PlayerID | null] | null;
+
+/** Build a positional seed; courts left out are open. */
+const SeedFrom = (courts: number, plans: CourtPlan[]): RoundSeed => ({
+  matchups: Array.from({ length: courts }, (_, i) => {
+    const slots = plans[i];
+    if (!slots) return { A: [null, null], B: [null, null] };
+    return { A: [slots[0], slots[1]], B: [slots[2], slots[3]] };
+  }),
+});
+
+const seedScenarios = (): SeedScenario[] => {
+  const scenarios: SeedScenario[] = [];
+
+  {
+    const players = pool(12);
+    scenarios.push({
+      label: "a complete court is kept together",
+      players,
+      courts: 3,
+      history: syntheticHistory(players, 3, 3),
+      options: {},
+      seed: SeedFrom(3, [[players[0], players[1], players[2], players[3]]]),
+      pinned: [0],
+      dropped: [],
+      matchups: 3,
+    });
+  }
+
+  {
+    const players = pool(12);
+    scenarios.push({
+      label: "two half-filled courts are completed in place",
+      players,
+      courts: 3,
+      history: syntheticHistory(players, 3, 3),
+      options: {},
+      seed: SeedFrom(3, [
+        [players[0], players[1], null, null],
+        null,
+        [players[4], null, null, null],
+      ]),
+      pinned: [0, 2],
+      dropped: [],
+      matchups: 3,
+    });
+  }
+
+  {
+    // Three players are left and three of them are pinned to a court that needs
+    // a fourth: nobody can fill it, so the court is dropped and they all sit.
+    const players = pool(10);
+    scenarios.push({
+      label: "a court with no one left to complete it is dropped",
+      players,
+      courts: 3,
+      history: syntheticHistory(players, 3, 3),
+      options: { force_sitting: players.slice(3) },
+      seed: SeedFrom(3, [[players[0], players[1], players[2], null]]),
+      pinned: [],
+      dropped: [0],
+      matchups: 0,
+    });
+  }
+
+  {
+    // The RG-1 input (10 players / 1 court, 6 must sit) combined with a seeded
+    // court: no candidate can avoid re-seating a sitter, and the fill must still
+    // answer with a legal round.
+    const players = pool(10);
+    scenarios.push({
+      label: "RG-1 pressure (more than half must sit) with a seeded court",
+      players,
+      courts: 1,
+      history: syntheticHistory(players, 1, 1),
+      options: {},
+      seed: SeedFrom(1, [[players[0], players[1], null, null]]),
+      pinned: [0],
+      dropped: [],
+      matchups: 1,
+    });
+  }
+
+  {
+    // A caller bug (the same player in several slots) must not corrupt the round.
+    const players = pool(8);
+    scenarios.push({
+      label: "repeated seed slots are deduped",
+      players,
+      courts: 2,
+      history: [],
+      options: {},
+      seed: SeedFrom(2, [
+        [players[0], players[0], null, null],
+        [players[0], players[1], null, null],
+      ]),
+      pinned: [],
+      dropped: [],
+      matchups: 2,
+    });
+  }
+
+  return scenarios;
+};
+
+/** The players a partial matchup already commits to a court. */
+const SeedPlayers = (matchup: PartialMatchup): PlayerID[] =>
+  [matchup.A[0], matchup.A[1], matchup.B[0], matchup.B[1]].filter(
+    (player): player is PlayerID => player !== null,
+  );
+
+/** Invariants one filled round must satisfy for a scenario. */
+const checkSeededRound = (round: InstrumentedRound, scenario: SeedScenario): string[] => {
+  const issues: string[] = [];
+  const matchups = round.matchups ?? [];
+
+  if (matchups.length !== scenario.matchups) {
+    issues.push(`expected ${scenario.matchups} matchups, got ${matchups.length}`);
+  }
+  if (matchups.length > scenario.courts) {
+    issues.push(`more matchups (${matchups.length}) than courts (${scenario.courts})`);
+  }
+
+  const seenIds = new Set<string>();
+  const onCourt: PlayerID[] = [];
+  matchups.forEach((m, index) => {
+    const four = [...m.A, ...m.B];
+    if (new Set(four).size !== 4) {
+      issues.push(`matchup ${index}: players are not four distinct ids (${four.join(", ")})`);
+    }
+    if (m.score[0] !== -1 || m.score[1] !== -1) {
+      issues.push(`matchup ${index}: score should be fresh [-1,-1]`);
+    }
+    if (!m.id || seenIds.has(m.id)) {
+      issues.push(`matchup ${index}: missing or duplicate matchup id`);
+    }
+    seenIds.add(m.id);
+    onCourt.push(...four);
+  });
+  if (new Set(onCourt).size !== onCourt.length) issues.push("a player is on court twice");
+
+  const sitting = round.sitting ?? [];
+  if (new Set(sitting).size !== sitting.length) issues.push("a player sits twice");
+  const both = sitting.filter((p) => onCourt.includes(p));
+  if (both.length) issues.push(`both playing and sitting: ${both.join(", ")}`);
+
+  const accounted = [...onCourt, ...sitting];
+  const missing = scenario.players.filter((p) => !accounted.includes(p));
+  const extra = accounted.filter((p) => !scenario.players.includes(p));
+  if (missing.length) issues.push(`players unaccounted for: ${missing.join(", ")}`);
+  if (extra.length) issues.push(`players not in the pool: ${extra.join(", ")}`);
+  if (accounted.length !== scenario.players.length) {
+    issues.push(`accounted ${accounted.length} of ${scenario.players.length} players`);
+  }
+
+  for (const player of scenario.options.force_sitting ?? []) {
+    if (onCourt.includes(player)) issues.push(`forced sitter ${player} is on court`);
+    if (!sitting.includes(player)) issues.push(`forced sitter ${player} is not listed as sitting`);
+  }
+
+  for (const court of scenario.pinned) {
+    const seeded = scenario.seed.matchups[court];
+    const matchup = matchups[court];
+    if (!matchup) {
+      issues.push(`pinned court ${court} is missing`);
+      continue;
+    }
+    // Only the slots the caller actually fixed must survive; the open ones are
+    // exactly what the fill is for.
+    const want = [...seeded.A, ...seeded.B];
+    const got = [...matchup.A, ...matchup.B];
+    const moved = want
+      .map((player, slot) => (player !== null && player !== got[slot] ? slot : -1))
+      .filter((slot) => slot !== -1);
+    if (moved.length) {
+      issues.push(
+        `pinned court ${court}: seeded players moved (wanted ${want.join(",")} got ${got.join(",")})`,
+      );
+    }
+  }
+
+  for (const court of scenario.dropped) {
+    const fixed = SeedPlayers(scenario.seed.matchups[court]);
+    const playing = fixed.filter((p) => onCourt.includes(p));
+    const notSitting = fixed.filter((p) => !sitting.includes(p));
+    if (playing.length) issues.push(`dropped court ${court}: ${playing.join(", ")} still plays`);
+    if (notSitting.length) {
+      issues.push(`dropped court ${court}: ${notSitting.join(", ")} is not sitting`);
+    }
+  }
+
+  return issues;
+};
+
+const seedFinding = (scenarios: SeedScenario[], trials: number): Finding => {
+  const details: string[] = [];
+  let checked = 0;
+  let failed = 0;
+
+  for (const scenario of scenarios) {
+    const before = JSON.stringify(scenario.seed);
+    const distinct = new Set<string>();
+    const issues: string[] = [];
+    let undefinedCount = 0;
+
+    for (let i = 0; i < trials; i++) {
+      const round: InstrumentedRound | undefined = NextRound(
+        scenario.players,
+        scenario.courts,
+        scenario.history,
+        scenario.options,
+        scenario.seed,
+      );
+      if (!round) {
+        undefinedCount++;
+        continue;
+      }
+      checked++;
+      distinct.add(roundSignature(round));
+      for (const issue of checkSeededRound(round, scenario)) {
+        if (issues.length < 6) issues.push(issue);
+      }
+    }
+
+    if (JSON.stringify(scenario.seed) !== before) {
+      issues.push("generation mutated the caller's seed");
+    }
+    if (undefinedCount) {
+      issues.unshift(`${undefinedCount}/${trials} fills returned undefined`);
+    }
+
+    if (issues.length) {
+      failed++;
+      details.push(`FAIL ${scenario.label}: ${issues.slice(0, 4).join("; ")}`);
+    } else {
+      details.push(`ok   ${scenario.label}: ${trials} fills, ${distinct.size} distinct`);
+    }
+  }
+
+  if (!checked) return finding("seed", "info", "no seeded fills were exercised");
+  return failed
+    ? finding(
+        "seed",
+        "fail",
+        `${failed}/${scenarios.length} seeded-fill scenarios misbehaved`,
+        details,
+      )
+    : finding(
+        "seed",
+        "pass",
+        `${scenarios.length} seeded-fill scenarios well-formed (${checked} fills)`,
+        details,
+      );
 };
 
 interface SessionTrial {
@@ -1104,6 +1417,8 @@ interface ScenarioReport {
   history: number;
   trials: number;
   findings: Finding[];
+  /** overrides the "[Np · N courts · N rounds]" bracket when set */
+  note?: string;
 }
 
 const SYMBOL: Record<Severity, string> = { pass: "PASS", info: "----", warn: "WARN", fail: "FAIL" };
@@ -1284,6 +1599,26 @@ const main = (): number => {
         for (const finding of findings) printFinding(finding, config.verbose);
         console.log("");
       }
+    }
+
+    // The manual-edit fill path: not a sample in the usual sense (it owns its
+    // pools and layouts), so it is reported as its own scenario.
+    const seedTrials = config.quick ? 25 : config.full ? 200 : 80;
+    const seedScenariosList = seedScenarios();
+    const seedReport: ScenarioReport = {
+      label: "seeded fill (manual round edit)",
+      players: 0,
+      courts: 0,
+      history: 0,
+      trials: seedTrials,
+      findings: [seedFinding(seedScenariosList, seedTrials)],
+      note: `${plural(seedScenariosList.length, "scenario")} of RoundSeed fills`,
+    };
+    reports.push(seedReport);
+    if (!config.json) {
+      console.log(`  ${seedReport.label}  [${seedReport.note} · ${seedTrials} trials]`);
+      for (const finding of seedReport.findings) printFinding(finding, config.verbose);
+      console.log("");
     }
   } finally {
     restore();

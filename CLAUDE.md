@@ -154,6 +154,21 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
   last round. Disabled players are folded into the optimizer's `force_sitting` at
   generation time, so they get no court until re-enabled. Saving calls
   `update-event`, which broadcasts to every viewer live.
+- **Edit round manually** (`components/RoundEditor.tsx`; owner-only, and only on the
+  newest *unscored* round — the same guard as Regenerate, so history is never
+  editable). One `<select>` per court slot; picking a player who is already on another
+  court moves them there, Sit players are unpickable, and the sitting list is derived
+  from whoever ends up unassigned. **Fill remaining** completes the open slots through
+  the same optimizer: `NextRound` takes an optional `RoundSeed` (`social.ts`) — a
+  *positional* court layout whose non-null slots are fixed. Seeded players leave the
+  pool, committed courts are completed most-filled-first, and a court the pool can't
+  complete is dropped with its players moved to sitting (the editor names them).
+  `applyFill` maps the dense result back onto the owner's court numbering. Save rebuilds
+  the round and goes through `live.save`, keeping a matchup's id when its lineup is
+  untouched so a pending player score isn't orphaned. RG-1 (the optimizer returning
+  `undefined` when more than half the pool must sit) was fixed as part of this: pass 1
+  now falls back to its best candidate when the "no back-to-back sits" filter is
+  unsatisfiable. See `frontend/ROUND-GENERATION.md`.
 - **Provisional player scores.** When the owner ticks **Let players enter scores**
   (`EventEditor.tsx` → top-level `SocialEvent.allowPlayerScores`), non-owner viewers
   get per-matchup score inputs + a **Submit** button on the rounds page (→
