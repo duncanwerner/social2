@@ -22,7 +22,9 @@ npm run dev        # http://localhost:5174  (backend runs separately on :8787)
 ```
 
 Other scripts: `npm run build` (emits `dist/`), `npm run preview`,
-`npm run typecheck`.
+`npm run typecheck`, `npm run validate:rounds` (statistical validation of the round
+generator — see [`ROUND-GENERATION.md`](ROUND-GENERATION.md) for the findings that
+harness has produced, including one open crash-class defect).
 
 Backend URL defaults to `http://localhost:8787`; override with a `VITE_BACKEND_URL`
 env var (e.g. in `.env` or the Pages build environment).

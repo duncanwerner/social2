@@ -10,7 +10,8 @@
     "deploy": "npx wrangler pages deploy dist",
     "preview": "vite preview",
     "preview:pages": "npm run build && npx wrangler pages dev dist",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p functions/tsconfig.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p functions/tsconfig.json",
+    "validate:rounds": "node scripts/validate-rounds.ts"
   },
   "dependencies": {
     "@solidjs/router": "2.0.0-next.18",
