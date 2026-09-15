@@ -4,3 +4,7 @@ dist/
 .vite/
 .dev.vars
 .wrangler/
+# Local Vite env overrides — each dev points VITE_BACKEND_URL wherever they need
+# (the default in src/api.ts is the local backend). Never commit these.
+.env.local
+.env.*.local
