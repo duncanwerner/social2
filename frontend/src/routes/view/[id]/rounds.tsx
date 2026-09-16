@@ -26,6 +26,7 @@ export default function ViewRounds() {
   const [viewIdx, setViewIdx] = createSignal(0);
   const [draft, setDraft] = createSignal<[number, number][]>([]);
   const [generating, setGenerating] = createSignal(false);
+  const [deleting, setDeleting] = createSignal(false);
   const [savingScores, setSavingScores] = createSignal(false);
   const [submitting, setSubmitting] = createSignal<number | null>(null);
   // True while the owner is manually assigning the newest round's courts.
@@ -226,6 +227,28 @@ export default function ViewRounds() {
   // disturbed. A court-less event has nothing to assign.
   const canEditRound = () =>
     canRegenerate() && (live.event()?.courts.length ?? 0) > 0;
+
+  // Deleting mirrors editing's guard exactly: the newest, unscored round, with
+  // nothing half-entered. It deliberately does not require courts — there is
+  // nothing to assign — so an event whose courts were removed can still drop its
+  // stale round. Discarding it is safe: the round is unscored and regenerable.
+  const canDeleteRound = () => canRegenerate();
+
+  // Drop the newest round and persist (which broadcasts to viewers). Prior rounds
+  // are kept, so the optimizer's history for the next generation is unchanged.
+  async function deleteRound() {
+    const ev = live.event();
+    if (!ev?.rounds?.length || !canDeleteRound() || deleting()) return;
+    setDeleting(true);
+    setError("");
+    try {
+      await live.save({ ...ev, rounds: ev.rounds.slice(0, -1) });
+    } catch (e) {
+      setError(`Could not delete round — ${errMsg(e)}`);
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   // Replace the edited round in place and persist (which broadcasts to viewers).
   // Rejects on failure so the editor can show the message and stay open.
@@ -431,21 +454,33 @@ export default function ViewRounds() {
               </Show>
 
               {/* Owner-only, and only on the newest unscored round: history is
-                  never editable. Kept out of the action row below so its two
-                  buttons still fit on a phone. */}
-              <Show when={canEditRound()}>
+                  never editable or deletable. Kept out of the action row below so
+                  its buttons still fit on a phone. */}
+              <Show when={canRegenerate()}>
                 <div class="rounds-edit-bar">
-                  <button
-                    class="link"
-                    type="button"
-                    disabled={generating()}
-                    onClick={() => {
-                      setError("");
-                      setEditing(true);
-                    }}
-                  >
-                    ✎ Edit round manually
-                  </button>
+                  <Show when={canEditRound()}>
+                    <button
+                      class="link"
+                      type="button"
+                      disabled={generating()}
+                      onClick={() => {
+                        setError("");
+                        setEditing(true);
+                      }}
+                    >
+                      ✎ Edit round manually
+                    </button>
+                  </Show>
+                  <Show when={canDeleteRound()}>
+                    <button
+                      class="link danger-link"
+                      type="button"
+                      disabled={deleting() || generating()}
+                      onClick={deleteRound}
+                    >
+                      {deleting() ? "Deleting…" : "🗑 Delete round"}
+                    </button>
+                  </Show>
                 </div>
               </Show>
 

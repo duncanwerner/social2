@@ -426,8 +426,15 @@ button.link:disabled {
 
 .rounds-edit-bar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
+  gap: 4px 16px;
   margin-top: -4px;
+}
+/* The destructive counterpart to the Edit link, so it doesn't read as one. */
+.rounds-edit-bar .danger-link {
+  color: var(--err);
 }
 .slot-row {
   display: flex;

@@ -150,13 +150,14 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
 - **Owner-on-view.** `get-event` returns `owner: true` for the owner's token, so the
   rounds page shows owner controls: **generate round** / **regenerate** the current
   unscored round (optimizer runs in a Web Worker — `round-worker.ts` wrapping
-  `social-worker.ts`/`social.ts`) and **score entry**. Generate is disabled off the
+  `social-worker.ts`/`social.ts`), **edit / delete** the newest unscored round, and
+  **score entry**. Generate is disabled off the
   last round. Disabled players are folded into the optimizer's `force_sitting` at
   generation time, so they get no court until re-enabled. Saving calls
   `update-event`, which broadcasts to every viewer live.
 - **Edit round manually** (`components/RoundEditor.tsx`; owner-only, and only on the
   newest *unscored* round — the same guard as Regenerate, so history is never
-  editable). One `<select>` per court slot; picking a player who is already on another
+  editable or deletable). One `<select>` per court slot; picking a player who is already on another
   court moves them there, Sit players are unpickable, and the sitting list is derived
   from whoever ends up unassigned. **Fill remaining** completes the open slots through
   the same optimizer: `NextRound` takes an optional `RoundSeed` (`social.ts`) — a
@@ -169,6 +170,14 @@ Solid 2 RC SPA, file-based routing (`filesystem-routing` + `@solidjs/router`).
   `undefined` when more than half the pool must sit) was fixed as part of this: pass 1
   now falls back to its best candidate when the "no back-to-back sits" filter is
   unsatisfiable. See `frontend/ROUND-GENERATION.md`.
+- **Delete round.** A `🗑 Delete round` link sits beside **Edit round manually** in the
+  rounds page's `.rounds-edit-bar` (`routes/view/[id]/rounds.tsx`). It shares the exact
+  edit guard (`canRegenerate()`: owner, active event, newest round, no saved scores and
+  nothing half-entered) minus the courts requirement, so only an unscored tail round can
+  ever be dropped. It persists `rounds.slice(0, -1)` through `live.save` (the same
+  `update-event` broadcast as any owner edit); prior rounds are kept, so the optimizer's
+  history is unchanged, and any provisional player scores for the dropped matchups are
+  simply orphaned by id (ephemeral by design). No confirm prompt, matching Regenerate.
 - **Provisional player scores.** When the owner ticks **Let players enter scores**
   (`EventEditor.tsx` → top-level `SocialEvent.allowPlayerScores`), non-owner viewers
   get per-matchup score inputs + a **Submit** button on the rounds page (→
